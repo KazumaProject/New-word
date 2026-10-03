@@ -80,6 +80,7 @@ class CodeSearchLimiter:
 
 
 CODE_SEARCH_LIMITER = CodeSearchLimiter()
+NEWS_COOLDOWNS: dict[str, float] = {}
 
 
 def retry_delay(error: urllib.error.HTTPError, attempt: int) -> float:
@@ -108,6 +109,7 @@ def request(
     method: str = "GET",
     body: bytes | None = None,
     code_search: bool = False,
+    max_retry_wait: float | None = None,
 ) -> bytes:
     h = {"User-Agent": "KazumaProject-New-word/2.0"}
     if headers:
@@ -131,7 +133,10 @@ def request(
             if not retryable or attempt == attempts:
                 raise
             delay = retry_delay(error, attempt)
-            print(f"Retry GET after HTTP {error.code}: wait {delay:.1f}s", flush=True)
+            if max_retry_wait is not None and delay > max_retry_wait:
+                raise
+            host = urllib.parse.urlsplit(url).netloc
+            print(f"Retry GET {host} after HTTP {error.code}: wait {delay:.1f}s", flush=True)
             time.sleep(delay)
         except (urllib.error.URLError, TimeoutError, ConnectionError):
             if attempt == attempts:
@@ -203,23 +208,78 @@ def fetch_id_map() -> dict[str, int]:
     return out
 
 
-def google_news_rss(query: str) -> list[dict[str, str]]:
-    params = urllib.parse.urlencode({"q": query, "hl": "ja", "gl": "JP", "ceid": "JP:ja"})
-    root = ET.fromstring(request("https://news.google.com/rss/search?" + params))
+def news_request(url: str) -> bytes:
+    host = urllib.parse.urlsplit(url).netloc
+    remaining = NEWS_COOLDOWNS.get(host, 0) - time.monotonic()
+    if remaining > 0:
+        raise RuntimeError(f"{host}: waiting for provider cooldown ({remaining:.0f}s remaining)")
+    try:
+        return request(url, max_retry_wait=15)
+    except urllib.error.HTTPError as error:
+        delay = retry_delay(error, 3) if error.code == 429 or error.headers.get("Retry-After") else 60
+        NEWS_COOLDOWNS[host] = time.monotonic() + max(1, delay)
+        raise
+    except (urllib.error.URLError, TimeoutError, ConnectionError):
+        NEWS_COOLDOWNS[host] = time.monotonic() + 60
+        raise
+
+
+def parse_news_rss(data: bytes, *, bing: bool = False) -> list[dict[str, str]]:
+    root = ET.fromstring(data)
     if root.tag != "rss" or root.find("channel") is None:
-        raise RuntimeError("Google News returned an unexpected RSS document")
+        raise RuntimeError("News provider returned an unexpected RSS document")
     items = []
     for item in root.findall("./channel/item"):
         title = html.unescape(item.findtext("title") or "").strip()
         link = (item.findtext("link") or "").strip()
+        source_node = item.find("source")
+        source = (source_node.text or "").strip() if source_node is not None else ""
+        source_url = source_node.get("url", "") if source_node is not None else ""
+        description = ""
+        if bing:
+            source = next((child.text or "" for child in item if child.tag.rsplit("}", 1)[-1] == "Source"), "").strip()
+            destination = urllib.parse.parse_qs(urllib.parse.urlsplit(link).query).get("url", [link])[0]
+            if urllib.parse.urlsplit(destination).scheme in {"http", "https"}:
+                link = destination
+                hostname = urllib.parse.urlsplit(link).hostname or ""
+                if hostname.removeprefix("www.") != "msn.com":
+                    source_url = f"https://{hostname}"
+            description = re.sub(r"<[^>]*>", " ", html.unescape(item.findtext("description") or ""))[:1000]
         if title and link:
             items.append({
                 "title": title,
                 "link": link,
                 "pubdate": (item.findtext("pubDate") or "").strip(),
-                "source": (item.findtext("source") or "").strip(),
+                "source": source,
+                "source_url": source_url,
+                "description": description,
             })
     return items
+
+
+def google_news_rss(query: str) -> list[dict[str, str]]:
+    params = urllib.parse.urlencode({"q": query, "hl": "ja", "gl": "JP", "ceid": "JP:ja"})
+    try:
+        return parse_news_rss(news_request("https://news.google.com/rss/search?" + params))
+    except (urllib.error.URLError, TimeoutError, ConnectionError, RuntimeError, ET.ParseError) as error:
+        print(f"Google News unavailable ({error}); use Bing News RSS", flush=True)
+        return bing_news_rss(query)
+
+
+def bing_news_rss(query: str) -> list[dict[str, str]]:
+    # Bing does not use Google's when: operator; enforce dates after parsing.
+    query = re.sub(r"\s+when:\d+d$", "", query)
+    params = urllib.parse.urlencode({"q": query, "format": "rss", "setlang": "ja-JP", "cc": "jp"})
+    return parse_news_rss(news_request("https://www.bing.com/news/search?" + params), bing=True)
+
+
+def publisher_key(item: dict[str, str]) -> str:
+    host = urllib.parse.urlsplit(item.get("source_url", "")).hostname
+    if host:
+        return host.removeprefix("www.").casefold()
+    source = re.sub(r"\s+on MSN$", "", item["source"], flags=re.IGNORECASE)
+    source = re.sub(r"[（(][^）)]*[）)]", "", source)
+    return normalize(source)
 
 
 def article_date(item: dict[str, str]) -> dt.datetime | None:
@@ -347,12 +407,12 @@ def select_sources(items: list[dict[str, str]]) -> list[dict[str, str]]:
     # A shared link must not count as evidence from two publishers.
     for first in ordered:
         for second in ordered:
-            if normalize(first["source"]) != normalize(second["source"]) and first["link"] != second["link"]:
+            if publisher_key(first) != publisher_key(second) and first["link"] != second["link"]:
                 selected = [first, second]
-                publishers = {normalize(item["source"]) for item in selected}
+                publishers = {publisher_key(item) for item in selected}
                 links = {item["link"] for item in selected}
                 for item in ordered:
-                    if normalize(item["source"]) not in publishers and item["link"] not in links:
+                    if publisher_key(item) not in publishers and item["link"] not in links:
                         selected.append(item)
                         break
                 return selected
@@ -371,6 +431,7 @@ def collect_candidates(now: dt.datetime, excluded: set[str], id_map: dict[str, i
             for query in queries:
                 counts["queries"] += 1
                 rss_query = f"{query} when:{days}d" if days is not None else query
+                print(f"Fetch RSS ({counts['queries']}/{len(queries)}): {rss_query}", flush=True)
                 for item in google_news_rss(rss_query):
                     counts["articles"] += 1
                     published = article_date(item)
@@ -380,11 +441,12 @@ def collect_candidates(now: dt.datetime, excluded: set[str], id_map: dict[str, i
                     if cutoff is not None and published < cutoff:
                         counts["outside_window"] += 1
                         continue
-                    for word in sorted(extract_candidates(item["title"])):
+                    text = item["title"] + " " + item.get("description", "")
+                    for word in sorted(extract_candidates(text)):
                         key = normalize(word)
                         entry = evidence.setdefault(key, {"variants": {}, "items": {}})
                         entry["variants"][word] = max(published, entry["variants"].get(word, published))
-                        entry["items"][(normalize(item["source"]), item["link"])] = item
+                        entry["items"][(publisher_key(item), item["link"])] = item
 
             counts["candidates"] = len(evidence)
             ranked = []
@@ -393,7 +455,7 @@ def collect_candidates(now: dt.datetime, excluded: set[str], id_map: dict[str, i
                     counts["already_seen"] += 1
                     continue
                 items = list(entry["items"].values())
-                publishers = {normalize(item["source"]) for item in items if item["source"].strip()}
+                publishers = {publisher_key(item) for item in items if item["source"].strip()}
                 if len(publishers) < 2 or len({item["link"] for item in items}) < 2:
                     counts["fewer_than_two_publishers"] += 1
                     continue
@@ -412,6 +474,7 @@ def collect_candidates(now: dt.datetime, excluded: set[str], id_map: dict[str, i
                     counts["fewer_than_two_distinct_sources"] += 1
                     continue
                 if key not in checked:
+                    print(f"Check existing word: {word}", flush=True)
                     checked[key] = already_in_japanese_keyboard(word)
                 if checked[key]:
                     counts["already_registered"] += 1
