@@ -3,9 +3,8 @@ name: Daily new words
 on:
   workflow_dispatch:
   schedule:
-    # Toronto is UTC-4 during EDT and UTC-5 during EST.
-    # Run at both possible UTC times; the script exits unless local time is 19:xx.
-    - cron: "0 0,23 * * *"
+    - cron: "0 19 * * *"
+      timezone: America/Toronto
 
 permissions:
   contents: write
@@ -18,15 +17,19 @@ concurrency:
 jobs:
   collect:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Test collector
+        run: python3 -B -m unittest discover -s tests -v
 
       - name: Collect new words
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          FORCE_RUN: ${{ github.event_name == 'workflow_dispatch' && '1' || '0' }}
         run: python3 scripts/collect_new_words.py
 
       - name: Commit seen-word database
