@@ -29,6 +29,7 @@ jobs:
       - name: Collect new words
         env:
           GH_TOKEN: ${{ github.token }}
+          CODE_SEARCH_TOKEN: ${{ secrets.CODE_SEARCH_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: python3 scripts/collect_new_words.py
 

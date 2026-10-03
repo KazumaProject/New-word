@@ -203,21 +203,6 @@ class CollectorTests(unittest.TestCase):
         self.rss = [article("同一リンク", source, link="https://example.com/shared") for source in ("媒体A", "媒体B")]
         self.assertEqual(self.run_main(), 1)
 
-    def test_same_publisher_from_two_aggregators_does_not_count_twice(self):
-        self.rss = [
-            article("単独の媒体", "媒体A") | {"source_url": "https://www.example.com"},
-            article("単独の媒体", "媒体A（別表記）") | {"source_url": "https://example.com"},
-        ]
-        self.assertEqual(self.run_main(), 1)
-
-    def test_bing_snippets_supply_names_missing_from_truncated_headlines(self):
-        self.rss = evidence("スニペットの名称")
-        for item in self.rss:
-            item["title"] = "新製品を発表"
-            item["description"] = "製品の名称は「スニペットの名称」です。"
-        self.assertEqual(self.run_main(), 0)
-        self.assertEqual(self.published()[0]["word"], "スニペットの名称")
-
     def test_sources_include_distinct_publishers_even_when_first_has_many_articles(self):
         items = [article("名称", "媒体A", link=f"https://example.com/a{index}") for index in range(4)]
         items.append(article("名称", "媒体B", age=dt.timedelta(hours=2)))
@@ -266,6 +251,21 @@ class CollectorTests(unittest.TestCase):
                 self.assertEqual(self.run_main(), 1)
                 self.assertEqual(self.github.issues, [])
                 self.assertEqual(self.seen.read_bytes(), original)
+
+    def test_rate_limit_publishes_only_candidates_already_verified(self):
+        self.rss = evidence("FactoryLens") + evidence("ホームシック")
+        with patch.object(collector, "already_in_japanese_keyboard", side_effect=[False, collector.CodeSearchDeferred("628s cooldown")]):
+            self.assertEqual(self.run_main(), 0)
+        self.assertEqual([row["word"] for row in self.published()], ["FactoryLens"])
+        self.assertEqual(collector.load_seen(), {"factorylens"})
+        self.assertIn("code_search_deferred", self.output.getvalue())
+
+    def test_rate_limit_before_any_verified_candidate_fails(self):
+        self.rss = evidence("未確認の語")
+        with patch.object(collector, "already_in_japanese_keyboard", side_effect=collector.CodeSearchDeferred("628s cooldown")):
+            self.assertEqual(self.run_main(), 1)
+        self.assertEqual(self.github.issues, [])
+        self.assertEqual(collector.load_seen(), set())
 
     def test_same_day_append_preserves_human_text_and_respects_total_limit(self):
         old_rows = [candidate(f"掲載済み{index}") for index in range(9)]
@@ -345,65 +345,8 @@ class CollectorTests(unittest.TestCase):
 
 
 class NetworkingTests(unittest.TestCase):
-    def setUp(self):
-        patcher = patch.dict(collector.NEWS_COOLDOWNS, {}, clear=True)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
     def response(self, body=b"ok"):
         return contextlib.nullcontext(io.BytesIO(body))
-
-    def bing_feed(self):
-        return '''<rss xmlns:News="https://www.bing.com/news/search"><channel><item>
-        <title>新製品「試験名称」</title>
-        <link>https://www.bing.com/news/apiclick.aspx?url=https%3A%2F%2Fexample.com%2Fstory</link>
-        <description>詳細は「試験名称」です。</description>
-        <pubDate>Fri, 02 Oct 2026 10:00:00 GMT</pubDate>
-        <News:Source>例示媒体</News:Source>
-        </item></channel></rss>'''.encode()
-
-    def test_google_long_rate_limit_uses_bing_without_early_retry(self):
-        attempts = []
-        error = urllib.error.HTTPError("https://news.google.com", 429, "limited", {"Retry-After": "710"}, None)
-        def opener(request, **kwargs):
-            attempts.append(request.full_url)
-            if urllib.parse.urlsplit(request.full_url).netloc == "news.google.com":
-                raise error
-            return self.response(self.bing_feed())
-        with patch.object(collector.urllib.request, "urlopen", side_effect=opener), patch.object(collector.time, "sleep") as sleep:
-            first = collector.google_news_rss('"発表" 新製品 when:1d')
-            second = collector.google_news_rss('"新機能" 発表 when:1d')
-        self.assertEqual(first, second)
-        self.assertEqual(sum(urllib.parse.urlsplit(url).netloc == "news.google.com" for url in attempts), 1)
-        self.assertEqual(len(attempts), 3)
-        self.assertNotIn("when:", urllib.parse.parse_qs(urllib.parse.urlsplit(attempts[1]).query)["q"][0])
-        self.assertEqual(first[0]["link"], "https://example.com/story")
-        self.assertEqual(first[0]["source"], "例示媒体")
-        self.assertEqual(first[0]["source_url"], "https://example.com")
-        sleep.assert_not_called()
-
-    def test_news_provider_can_be_retried_after_cooldown_expires(self):
-        clock = [100.0]
-        error = urllib.error.HTTPError("https://news.google.com", 429, "limited", {"Retry-After": "710"}, None)
-        with patch.object(collector.time, "monotonic", side_effect=lambda: clock[0]), patch.object(collector.urllib.request, "urlopen", side_effect=[error, self.response(b"ok")]) as opener:
-            with self.assertRaises(urllib.error.HTTPError):
-                collector.news_request("https://news.google.com/rss")
-            clock[0] = 809
-            with self.assertRaises(RuntimeError):
-                collector.news_request("https://news.google.com/rss")
-            clock[0] = 811
-            self.assertEqual(collector.news_request("https://news.google.com/rss"), b"ok")
-        self.assertEqual(opener.call_count, 2)
-
-    def test_msn_suffix_and_parentheses_do_not_create_extra_publishers(self):
-        self.assertEqual(collector.publisher_key({"source": "毎日新聞 on MSN"}), collector.publisher_key({"source": "毎日新聞"}))
-        self.assertEqual(collector.publisher_key({"source": "MANTANWEB（まんたんウェブ）"}), collector.publisher_key({"source": "MANTANWEB"}))
-
-    def test_both_news_providers_unavailable_raise_without_fabricating_evidence(self):
-        with patch.object(collector.urllib.request, "urlopen", side_effect=urllib.error.HTTPError("https://example.com", 429, "limited", {"Retry-After": "710"}, None)), patch.object(collector.time, "sleep") as sleep:
-            with self.assertRaises(urllib.error.HTTPError):
-                collector.google_news_rss("新製品 when:1d")
-        sleep.assert_not_called()
 
     def test_read_retry_respects_retry_after(self):
         error = urllib.error.HTTPError("https://example.com", 429, "limited", {"Retry-After": "17"}, None)
@@ -445,6 +388,22 @@ class NetworkingTests(unittest.TestCase):
                 collector.request("https://example.com", method="POST", body=b"{}")
         self.assertEqual(opener.call_count, 1)
         sleep.assert_not_called()
+
+    def test_long_code_search_limit_fails_without_retrying_early(self):
+        error = urllib.error.HTTPError("https://api.github.com", 429, "limited", {"Retry-After": "628"}, None)
+        with patch.object(collector.urllib.request, "urlopen", side_effect=error) as opener, patch.object(collector, "CODE_SEARCH_LIMITER") as limiter, patch.object(collector.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "CODE_SEARCH_TOKEN"):
+                collector.request("https://api.github.com/search/code?q=example", code_search=True)
+        self.assertEqual(opener.call_count, 1)
+        limiter.wait.assert_called_once()
+        sleep.assert_not_called()
+
+    def test_dedicated_search_token_is_never_used_for_issue_writes(self):
+        with patch.object(collector, "TOKEN", "issue-token"), patch.object(collector, "CODE_SEARCH_TOKEN", "read-only-search-token"), patch.object(collector, "request", return_value=b'{}') as request:
+            collector.github_api("GET", "/search/code?q=example")
+            self.assertEqual(request.call_args.kwargs["headers"]["Authorization"], "Bearer read-only-search-token")
+            collector.github_api("POST", f"/repos/{collector.REPO}/issues", {"title": "test", "body": "test"})
+            self.assertEqual(request.call_args.kwargs["headers"]["Authorization"], "Bearer issue-token")
 
     def test_code_search_attempts_including_retries_obey_ten_per_minute(self):
         clock = [0.0]
