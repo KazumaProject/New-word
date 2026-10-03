@@ -29,7 +29,7 @@ Actions → Daily new words → Run workflow
 ## コード検索の認証
 
 Actionsの標準トークンではコード検索に長い待機制限が出る場合があります。
-制限が出るまでに確認できた候補がある場合は、その候補だけを掲載します。未確認の語は掲載済みとして記録せず、翌日以降も対象に残します。確認済みの候補が0件なら失敗扱いにします。
+制限が出るまでに確認できた候補がある場合は、その候補だけを掲載します。未確認の語は掲載済みとして記録せず、翌日以降も対象に残します。その日のIssueに掲載済みの語があれば既存Issueを保持して成功とし、その日分の確認済み候補が0件なら失敗扱いにします。
 より多くの候補を照合する場合は、任意で公開リポジトリを読み取るためのPersonal Access Tokenを、リポジトリのActions secret `CODE_SEARCH_TOKEN` に登録できます。
 Fine-grained tokenのRepository accessは `Public repositories (read-only)` を選び、追加の書き込み権限は不要です。
 

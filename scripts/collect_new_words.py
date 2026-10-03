@@ -551,11 +551,19 @@ def main(now: dt.datetime | None = None) -> int:
         excluded = load_seen()
         for issue in issues:
             excluded.update(normalize(row["word"]) for row in issue_rows(issue))
-        accepted = collect_candidates(now, excluded, fetch_id_map(), remaining)
+        deferred = None
+        try:
+            accepted = collect_candidates(now, excluded, fetch_id_map(), remaining)
+        except CodeSearchDeferred as error:
+            if not previous_rows:
+                raise
+            deferred = str(error)
+            accepted = []
         if not accepted:
             if previous_rows:
                 print(f"No additional candidates; keeping {len(previous_rows)} published candidates.")
-                write_summary([f"## {title}", f"掲載済み: {len(previous_rows)}語。追加候補なし。", existing["html_url"]])
+                reason = "コード検索の待機制限により追加なし。" if deferred else "追加候補なし。"
+                write_summary([f"## {title}", f"掲載済み: {len(previous_rows)}語。{reason}", existing["html_url"]])
                 return 0
             raise RuntimeError("All search stages exhausted: no verified, previously unlisted candidates")
 

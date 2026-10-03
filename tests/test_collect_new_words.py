@@ -287,6 +287,16 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(self.run_main(), 0)
         self.assertEqual(self.github.issues, [original])
 
+    def test_existing_daily_issue_is_successful_when_further_search_is_deferred(self):
+        original = issue(1, [candidate("掲載済みの候補")])
+        self.github = FakeGitHub([original])
+        self.rss = evidence("追加の未確認語")
+        with patch.object(collector, "already_in_japanese_keyboard", side_effect=collector.CodeSearchDeferred("628s cooldown")):
+            self.assertEqual(self.run_main(), 0)
+        self.assertEqual(self.github.issues, [original])
+        self.assertEqual(collector.load_seen(), {"掲載済みの候補"})
+        self.assertIn("コード検索の待機制限", self.summary.read_text())
+
     def test_legacy_tsv_is_parsed_and_preserved_on_append(self):
         row = candidate("旧形式の候補")
         body = "```tsv\n読み\t表記\t左ID\t右ID\t品詞\n" + f"{row['reading']}\t{row['word']}\t{row['id']}\t{row['id']}\t{row['pos']}\n```\n手書きメモ"
