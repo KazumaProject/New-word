@@ -1,0 +1,62 @@
+[
+  {
+    "word": "BioJapan",
+    "reading": "ばいおじゃぱん",
+    "sources": [{"source": "大林組（出展案内）", "link": "https://www.obayashi.co.jp/news/detail/news20260924_1.html"}],
+    "context": ["BioJapan 2026"],
+    "note": "出展者による日本語表記で確認"
+  },
+  {
+    "word": "FactoryLens",
+    "reading": "ふぁくとりーれんず",
+    "sources": [{"source": "Visual Components 公式発表", "link": "https://www.visualcomponents.com/jp/blog/press-release-factorylens/"}]
+  },
+  {
+    "word": "dots",
+    "reading": "どっつ",
+    "context": ["OpenAI", "ChatGPT"],
+    "sources": [{"source": "ASCII.jp", "link": "https://ascii.jp/elem/000/004/438/4438355/"}],
+    "note": "記事に明記された読み（公式の日本語読みは未確認）"
+  },
+  {
+    "word": "HomePad",
+    "reading": "ほーむぱっど",
+    "context": ["Apple", "アップル"],
+    "sources": [{"source": "すまほん!!", "link": "https://smhn.info/202610-apple-homepad-october-13-launch-report"}],
+    "note": "記事に明記された読み（未発表製品の報道上の名称）"
+  },
+  {
+    "word": "ゆめNEOBANK",
+    "reading": "ゆめねおばんく",
+    "sources": [{"source": "テレビ新広島（ライブドアニュース掲載）", "link": "https://news.livedoor.com/article/detail/32451569/"}],
+    "note": "記事に明記された読み"
+  },
+  {
+    "word": "Argon",
+    "reading": "あるごん",
+    "context": ["Gemini"],
+    "sources": [{"source": "Touch AI（名称の読み方）", "link": "https://touchai.jp/blog/gemini-4-argon"}],
+    "note": "記事に明記された読み（公式の日本語読みは未確認）"
+  },
+  {
+    "word": "Gemini",
+    "reading": "じぇみに",
+    "context": ["Google", "グーグル"],
+    "sources": [{"source": "Touch AI（名称の読み方）", "link": "https://touchai.jp/blog/gemini-4-argon"}],
+    "note": "記事に明記された読み"
+  },
+  {
+    "word": "Gemini 4 Argon",
+    "reading": "じぇみにふぉーあるごん",
+    "context": ["Google", "グーグル"],
+    "sources": [{"source": "最新テック", "link": "https://www.saishintech.com/2026/10/google-gemini-4-argon-oct-1-2026/"}],
+    "note": "記事に明記された読み（4はフォー、公式の日本語読みは未確認）"
+  },
+  {
+    "word": "灰色の魔女",
+    "reading": "はいいろのへくせ",
+    "context": ["ボトムズ"],
+    "sources": [{"source": "サンライズワールド 公式作品情報", "link": "https://www.sunrise-world.net/news/news.php?id=25677"}],
+    "note": "公式の作品名読み「ハイイロノヘクセ」で確認"
+  }
+]

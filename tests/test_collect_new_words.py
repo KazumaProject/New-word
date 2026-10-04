@@ -40,6 +40,9 @@ def evidence(word, age=dt.timedelta(hours=1), publishers=2, now=NOW):
 def candidate(word, date="2026-10-02", supplement=False):
     return {
         "date": date, "reading": collector.reading_hint(word), "word": word,
+        "reading_status": "confirmed" if collector.kana_reading(word) else "unconfirmed",
+        "reading_method": "kana" if collector.kana_reading(word) else "", "reading_sources": [],
+        "reading_note": "" if collector.kana_reading(word) else "出典に読みの明記が見つからないため確認待ち",
         "pos": collector.pos_label(word), "id": "1920", "normalized": collector.normalize(word),
         "sources": evidence(word), "supplement": supplement,
     }
@@ -106,6 +109,8 @@ class CollectorTests(unittest.TestCase):
             patch.object(collector, "SEEN_PATH", self.seen),
             patch.object(collector, "github_api", side_effect=lambda *args: self.github(*args)),
             patch.object(collector, "fetch_id_map", return_value=ID_MAP),
+            patch.object(collector, "public_reading_document", return_value=""),
+            patch.object(collector, "READINGS_PATH", Path(directory.name) / "readings.json"),
             patch.object(collector, "google_news_rss", side_effect=lambda query: self.rss),
             patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(self.summary)}),
             patch.object(collector.urllib.request, "urlopen", side_effect=AssertionError("unexpected real network request")),
@@ -305,7 +310,8 @@ class CollectorTests(unittest.TestCase):
         self.rss = evidence("新形式の候補")
         self.assertEqual(self.run_main(), 0)
         self.assertEqual(len(self.published()), 2)
-        self.assertTrue(self.github.issues[0]["body"].startswith(body))
+        self.assertIn("手書きメモ", self.github.issues[0]["body"])
+        self.assertIn(row["word"], self.github.issues[0]["body"])
 
     def test_publishing_failure_does_not_save_new_words(self):
         self.github.fail_write = True

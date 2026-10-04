@@ -2,6 +2,11 @@ name: Daily new words
 
 on:
   workflow_dispatch:
+    inputs:
+      refresh_readings:
+        description: "既存Issueの読みだけを更新（新規収集なし）"
+        type: boolean
+        default: false
   schedule:
     - cron: "0 19 * * *"
       timezone: America/Toronto
@@ -31,7 +36,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CODE_SEARCH_TOKEN: ${{ secrets.CODE_SEARCH_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-        run: python3 scripts/collect_new_words.py
+          REFRESH_READINGS: ${{ inputs.refresh_readings }}
+        run: |
+          if [ "$REFRESH_READINGS" = "true" ]; then
+            python3 scripts/collect_new_words.py --refresh-readings
+          else
+            python3 scripts/collect_new_words.py
+          fi
 
       - name: Commit seen-word database
         run: |

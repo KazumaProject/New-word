@@ -5,6 +5,7 @@ import csv
 import datetime as dt
 import email.utils
 import html
+from html.parser import HTMLParser
 import io
 import json
 import os
@@ -27,6 +28,7 @@ CODE_SEARCH_TOKEN = os.environ.get("CODE_SEARCH_TOKEN", "")
 TZ = ZoneInfo("America/Toronto")
 DAILY_LIMIT = 10
 SEEN_PATH = Path("data/seen.tsv")
+READINGS_PATH = Path(__file__).resolve().parents[1] / "data/readings.json"
 SEEN_FIELDS = ["date", "reading", "word", "pos", "id", "normalized"]
 MOZC_ID_DEF = "https://raw.githubusercontent.com/google/mozc/master/src/data/dictionary_oss/id.def"
 
@@ -113,19 +115,25 @@ def request(
     method: str = "GET",
     body: bytes | None = None,
     code_search: bool = False,
+    timeout: float = 30,
+    read_attempts: int = 3,
+    max_bytes: int | None = None,
 ) -> bytes:
     h = {"User-Agent": "KazumaProject-New-word/2.0"}
     if headers:
         h.update(headers)
     # Retrying a write after a lost response can create a duplicate Issue.
-    attempts = 3 if method == "GET" else 1
+    attempts = read_attempts if method == "GET" else 1
     for attempt in range(1, attempts + 1):
         if code_search:
             CODE_SEARCH_LIMITER.wait()
         try:
             req = urllib.request.Request(url, data=body, headers=h, method=method)
-            with urllib.request.urlopen(req, timeout=30) as response:
-                return response.read()
+            with urllib.request.urlopen(req, timeout=timeout) as response:
+                raw = response.read() if max_bytes is None else response.read(max_bytes + 1)
+                if max_bytes is not None and len(raw) > max_bytes:
+                    raise ValueError("Response exceeds size limit")
+                return raw
         except urllib.error.HTTPError as error:
             retryable = error.code in {408, 429, 500, 502, 503, 504} or (
                 error.code == 403 and (
@@ -232,6 +240,7 @@ def google_news_rss(query: str) -> list[dict[str, str]]:
                 "link": link,
                 "pubdate": (item.findtext("pubDate") or "").strip(),
                 "source": (item.findtext("source") or "").strip(),
+                "description": html.unescape(item.findtext("description") or ""),
             })
     return items
 
@@ -274,10 +283,205 @@ def extract_candidates(title: str) -> set[str]:
     return found
 
 
+def kana_reading(value: str) -> str | None:
+    value = unicodedata.normalize("NFKC", value).strip()
+    if not re.fullmatch(r"[ぁ-ゖァ-ヶー・\s]+", value) or not re.search(r"[ぁ-ゖァ-ヶ]", value):
+        return None
+    return "".join(
+        chr(ord(ch) - 0x60) if 0x30A1 <= ord(ch) <= 0x30F6 else ch
+        for ch in value if ch != "・" and not ch.isspace()
+    )
+
+
 def reading_hint(word: str) -> str:
-    if re.fullmatch(r"[ァ-ヶー・\s]+", word):
-        return "".join(chr(ord(ch) - 0x60) if 0x30A1 <= ord(ch) <= 0x30F6 else ch for ch in word)
-    return "要確認"
+    return kana_reading(word) or "要確認"
+
+
+class ReadingHTML(HTMLParser):
+    """Read visible text and ruby without interpreting scripts or styles."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts = []
+        self.rubies = []
+        self.hidden = 0
+        self.ruby = None
+        self.ruby_part = "base"
+
+    def handle_starttag(self, tag, attrs):
+        if tag in {"script", "style", "noscript"}:
+            self.hidden += 1
+        if self.hidden:
+            return
+        if tag == "ruby":
+            self.ruby = {"base": [], "reading": []}
+        elif tag == "rt":
+            self.ruby_part = "reading"
+        elif tag == "rp":
+            self.ruby_part = "ignore"
+        elif tag in {"p", "div", "br", "li", "h1", "h2", "h3", "td"}:
+            self.parts.append("\n")
+        if tag == "img":
+            self.parts.append(dict(attrs).get("alt", ""))
+
+    def handle_endtag(self, tag):
+        if tag in {"script", "style", "noscript"}:
+            self.hidden = max(0, self.hidden - 1)
+            return
+        if self.hidden:
+            return
+        if tag in {"rt", "rp"}:
+            self.ruby_part = "base"
+        elif tag == "ruby" and self.ruby is not None:
+            base = "".join(self.ruby["base"])
+            reading = "".join(self.ruby["reading"])
+            self.rubies.append((base, reading))
+            self.parts.append(base)
+            self.ruby = None
+            self.ruby_part = "base"
+        elif tag in {"p", "div", "li", "h1", "h2", "h3", "td"}:
+            self.parts.append("\n")
+
+    def handle_data(self, data):
+        if self.hidden:
+            return
+        if self.ruby is not None:
+            if self.ruby_part != "ignore":
+                self.ruby[self.ruby_part].append(data)
+        else:
+            self.parts.append(data)
+
+
+def extract_readings(word: str, document: str) -> set[str]:
+    parser = ReadingHTML()
+    parser.feed(document)
+    found = {reading for base, raw in parser.rubies
+             if normalize(base) == normalize(word) and (reading := kana_reading(raw))}
+    text = unicodedata.normalize("NFKC", "".join(parser.parts))
+    # Require the entire name, not a matching substring in another product name.
+    name = re.escape(unicodedata.normalize("NFKC", word)).replace(r"\ ", r"\s+")
+    kana = r"([ぁ-ゖァ-ヶー・ ]{1,100})"
+    boundary = r"(?<![A-Za-z0-9一-龠ぁ-ゖァ-ヶ])"
+    patterns = (
+        boundary + name + r'[」』”"]?\s*\(\s*(?:(?:読み方|読み|よみ)\s*[:：]\s*)?' + kana + r"\s*\)",
+        boundary + kana + r"\s*\(\s*" + name + r"\s*\)",
+        boundary + name + r'[」』”"]?\s*(?:の)?(?:読み方|読み|よみ)\s*[:：は]\s*[「『]?'+ kana + r"[」』]*(?=[。\n<]|$)",
+    )
+    for pattern in patterns:
+        for match in re.finditer(pattern, text, re.IGNORECASE):
+            reading = kana_reading(match.group(1))
+            if reading:
+                found.add(reading)
+    return found
+
+
+def public_reading_document(url: str) -> str:
+    parts = urllib.parse.urlsplit(url)
+    if parts.scheme not in {"http", "https"} or not parts.hostname or parts.username or parts.password:
+        raise ValueError("Invalid source URL")
+    raw = request(url, timeout=10, read_attempts=1, max_bytes=2_000_000)
+    charset = re.search(br'charset=["\']?([A-Za-z0-9_-]+)', raw[:4096], re.IGNORECASE)
+    return raw.decode(charset[1].decode("ascii") if charset else "utf-8", errors="replace")
+
+
+def publisher_url(url: str) -> str:
+    """Resolve the public Google News article wrapper to its publisher URL."""
+    parts = urllib.parse.urlsplit(url)
+    if parts.hostname != "news.google.com":
+        return url
+    if not re.fullmatch(r"/(?:rss/)?(?:articles|read)/[A-Za-z0-9_-]+", parts.path):
+        raise ValueError("Unsupported Google News link")
+    wrapper = public_reading_document(url)
+    signature = re.search(r'data-n-a-sg="([^"<>]+)"', wrapper)
+    timestamp = re.search(r'data-n-a-ts="(\d+)"', wrapper)
+    if not signature or not timestamp:
+        raise ValueError("Google News publisher URL unavailable")
+    context = [["X", "X", ["X", "X"], None, None, 1, 1, "US:en", None, 1,
+                None, None, None, None, None, 0, 1], "X", "X", 1, [1, 1, 1],
+               1, 1, None, 0, 0, None, 0]
+    inner = ["garturlreq", context, parts.path.rsplit("/", 1)[1], int(timestamp[1]), html.unescape(signature[1])]
+    body = urllib.parse.urlencode({"f.req": json.dumps([
+        [["Fbv4je", json.dumps(inner), None, "generic"]]
+    ])}).encode()
+    raw = request("https://news.google.com/_/DotsSplashUi/data/batchexecute",
+                  method="POST", body=body, headers={"Content-Type": "application/x-www-form-urlencoded"},
+                  timeout=10, max_bytes=100_000).decode("utf-8")
+    for line in raw.splitlines():
+        if line.startswith("[["):
+            for item in json.loads(line):
+                if isinstance(item, list) and len(item) >= 3 and item[0] == "wrb.fr" and item[1] == "Fbv4je" and isinstance(item[2], str):
+                    data = json.loads(item[2])
+                    if isinstance(data, list) and len(data) >= 2 and data[0] == "garturlres" and isinstance(data[1], str):
+                        return data[1]
+    raise ValueError("Google News publisher URL unavailable")
+
+
+class ReadingResolver:
+    def __init__(self, *, page_limit: int | None = 20) -> None:
+        self.page_limit = page_limit
+        self.page_count = 0
+        entries = json.loads(READINGS_PATH.read_text(encoding="utf-8")) if READINGS_PATH.exists() else []
+        self.reviewed = {}
+        for entry in entries:
+            reading = kana_reading(entry["reading"])
+            if reading != entry["reading"] or not entry.get("sources"):
+                raise ValueError("Reviewed readings require hiragana and source links")
+            self.reviewed[normalize(entry["word"])] = entry
+        self.documents = {}
+        self.results = {}
+
+    def resolve(self, word: str, sources: list[dict]) -> dict:
+        key = normalize(word)
+        context = normalize(" ".join(source.get("title", "") for source in sources))
+        reviewed = self.reviewed.get(key)
+        if reviewed and (not reviewed.get("context") or any(normalize(term) in context for term in reviewed["context"])):
+            return {"reading": reviewed["reading"], "reading_status": "confirmed",
+                    "reading_method": "reviewed", "reading_sources": reviewed["sources"],
+                    "reading_note": reviewed.get("note", "")}
+        if reading := kana_reading(word):
+            return {"reading": reading, "reading_status": "confirmed", "reading_method": "kana", "reading_sources": [], "reading_note": ""}
+        cache_key = (key, tuple(source.get("link", "") for source in sources))
+        if cache_key in self.results:
+            return self.results[cache_key].copy()
+        found = {}
+        failures = 0
+        # At most three publisher pages per word. Reuse shared article pages.
+        for source in sources[:3]:
+            for reading in extract_readings(word, source.get("title", "") + "\n" + source.get("description", "")):
+                found.setdefault(reading, []).append({"source": source["source"], "link": source["link"]})
+            link = source.get("link", "")
+            if not link:
+                continue
+            if link not in self.documents:
+                if self.page_limit is not None and self.page_count >= self.page_limit:
+                    failures += 1
+                    continue
+                self.page_count += 1
+                try:
+                    direct = publisher_url(link)
+                    self.documents[link] = (direct, public_reading_document(direct))
+                except (urllib.error.URLError, TimeoutError, ConnectionError, ValueError, LookupError) as error:
+                    print(f"Reading source unavailable ({source.get('source', '')}): {type(error).__name__}", flush=True)
+                    self.documents[link] = None
+            document = self.documents[link]
+            if document is None:
+                failures += 1
+                continue
+            direct, markup = document
+            for reading in extract_readings(word, markup):
+                found.setdefault(reading, []).append({"source": source["source"], "link": direct})
+        if len(found) == 1:
+            reading, evidence = next(iter(found.items()))
+            result = {"reading": reading, "reading_status": "confirmed", "reading_method": "source",
+                      "reading_sources": list({item["link"]: item for item in evidence}.values()), "reading_note": ""}
+        else:
+            status = "conflict" if found else "source_unavailable" if failures else "unconfirmed"
+            notes = {"conflict": "出典間で読みが異なるため確認待ち", "source_unavailable": "出典の取得失敗または取得上限により、読みの明記が未確認",
+                     "unconfirmed": "出典に読みの明記が見つからないため確認待ち"}
+            result = {"reading": "要確認", "reading_status": status, "reading_method": "", "reading_sources": [],
+                      "reading_note": notes[status]}
+        self.results[cache_key] = result
+        return result.copy()
 
 
 def pos_label(word: str) -> str:
@@ -346,6 +550,21 @@ def issue_rows(issue: dict) -> list[dict]:
                 "pos": row["品詞"], "id": row["左ID"], "normalized": key,
                 "sources": [], "supplement": False,
             })
+    # Recognize human readings entered in the visible table or import TSV.
+    # Hidden metadata from an earlier run must not overwrite those edits.
+    visible = []
+    for line in body.splitlines():
+        cells = line.split("|")
+        if line.startswith("|") and len(cells) == 8:
+            visible.append((html.unescape(cells[2].strip()), html.unescape(cells[1].strip())))
+    for match in re.finditer(r"```tsv\s*\n(.*?)```", body, re.DOTALL):
+        visible.extend((row.get("表記", ""), row.get("読み", ""))
+                       for row in csv.DictReader(io.StringIO(match[1]), delimiter="\t"))
+    for word, reading in visible:
+        key = normalize(word)
+        if key in result and result[key]["reading"] == "要確認" and kana_reading(reading):
+            result[key] = {**result[key], "reading": reading, "reading_method": "manual",
+                           "reading_status": "confirmed", "reading_sources": [], "reading_note": "手動で確認済み"}
     return list(result.values())
 
 
@@ -375,8 +594,10 @@ def select_sources(items: list[dict[str, str]]) -> list[dict[str, str]]:
     return []
 
 
-def collect_candidates(now: dt.datetime, excluded: set[str], id_map: dict[str, int], limit: int) -> list[dict]:
+def collect_candidates(now: dt.datetime, excluded: set[str], id_map: dict[str, int], limit: int,
+                       readings: ReadingResolver | None = None) -> list[dict]:
     checked = {}
+    readings = readings or ReadingResolver()
     reference = now.astimezone(dt.timezone.utc)
     for label, days, queries in SEARCH_STAGES:
         counts = Counter()
@@ -442,7 +663,7 @@ def collect_candidates(now: dt.datetime, excluded: set[str], id_map: dict[str, i
                     counts["already_registered"] += 1
                     continue
                 accepted.append({
-                    "date": now.date().isoformat(), "reading": reading_hint(word), "word": word,
+                    "date": now.date().isoformat(), **readings.resolve(word, sources), "word": word,
                     "pos": pos, "id": str(id_map[pos]), "normalized": key, "sources": sources,
                     "supplement": days != 1,
                 })
@@ -471,7 +692,16 @@ def render_rows(rows: list[dict]) -> str:
         )
         notes = []
         if row["reading"] == "要確認":
-            notes.append("読みは自動推測せず要確認")
+            notes.append(row.get("reading_note") or "読みの明記が未確認")
+        elif row.get("reading_method") == "kana":
+            notes.append("かな表記をひらがなに正規化")
+        elif row.get("reading_sources"):
+            notes.append("読み確認: " + "、".join(
+                f"[{markdown_cell(source['source'])}](<{source['link']}>)"
+                for source in row["reading_sources"]
+            ))
+            if row.get("reading_note"):
+                notes.append(markdown_cell(row["reading_note"]))
         if row["supplement"]:
             notes.append("補充候補: 過去の未登録語を含む")
         lines.append(
@@ -480,7 +710,10 @@ def render_rows(rows: list[dict]) -> str:
         )
     lines += ["", "## TSV", "", "```tsv", "読み\t表記\t左ID\t右ID\t品詞"]
     for row in rows:
-        lines.append(f"{row['reading']}\t{row['word']}\t{row['id']}\t{row['id']}\t{row['pos']}")
+        if kana_reading(row["reading"]):
+            lines.append(f"{row['reading']}\t{row['word']}\t{row['id']}\t{row['id']}\t{row['pos']}")
+    if any(not kana_reading(row["reading"]) for row in rows):
+        lines.insert(lines.index("```tsv"), "読み未確定の語はTSVから除外しています。\n")
     lines += ["```", ""]
     # Escape comment delimiters so a candidate cannot truncate the metadata.
     metadata = json.dumps({"version": 1, "rows": rows}, ensure_ascii=False).replace("--", "\\u002d\\u002d")
@@ -524,6 +757,163 @@ def publish_candidates(title: str, rows: list[dict], existing: dict | None) -> t
     return current["html_url"], previous_rows + selected
 
 
+def replace_issue_readings(issue: dict, updates: dict[str, dict]) -> str:
+    """Change collector fields in place while retaining surrounding human text."""
+    body = issue.get("body") or ""
+    rows = issue_rows(issue)
+    original = {normalize(row["word"]): row for row in rows}
+    replacements = {}
+    for key, update in updates.items():
+        current = original.get(key)
+        # A reading manually filled in after discovery must win over the backfill.
+        if current and current["reading"] == "要確認":
+            replacements[key] = {**current, **update}
+    if not replacements:
+        return body
+
+    def metadata(match):
+        data = json.loads(match[1])
+        data["rows"] = [replacements.get(normalize(row["word"]), row) for row in data["rows"]]
+        encoded = json.dumps(data, ensure_ascii=False).replace("--", "\\u002d\\u002d")
+        return "<!-- new-word-entries\n" + encoded + "\n-->"
+
+    body = ENTRIES_RE.sub(metadata, body)
+    # Legacy Issues need metadata before unresolved entries leave the import TSV.
+    if not ENTRIES_RE.search(body):
+        encoded = json.dumps({"version": 1, "rows": [replacements.get(normalize(row["word"]), row) for row in rows]},
+                             ensure_ascii=False).replace("--", "\\u002d\\u002d")
+        body += "\n\n<!-- new-word-entries\n" + encoded + "\n-->"
+    lines = body.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if not line.startswith("|"):
+            continue
+        cells = line.rstrip("\r\n").split("|")
+        if len(cells) != 8:
+            continue
+        key = normalize(html.unescape(cells[2].strip()))
+        row = replacements.get(key)
+        if row is None or html.unescape(cells[1].strip()) != "要確認":
+            continue
+        old_notes = render_rows([original[key]]).splitlines()[2].split("|")[-2].strip()
+        new_notes = render_rows([row]).splitlines()[2].split("|")[-2].strip()
+        preserved = [note for note in cells[-2].strip().split(" / ")
+                     if note and note not in old_notes.split(" / ")
+                     and note not in {"読みは自動推測せず要確認", "読みの明記が未確認"}]
+        cells[1] = " " + markdown_cell(row["reading"]) + " "
+        cells[-2] = " " + " / ".join(([new_notes] if new_notes else []) + preserved) + " "
+        lines[index] = "|".join(cells) + ("\n" if line.endswith("\n") else "")
+    body = "".join(lines)
+
+    def tsv(match):
+        output = io.StringIO()
+        reader = csv.DictReader(io.StringIO(match[1]), delimiter="\t")
+        if reader.fieldnames != ["読み", "表記", "左ID", "右ID", "品詞"]:
+            return match[0]
+        writer = csv.DictWriter(output, fieldnames=reader.fieldnames, delimiter="\t", lineterminator="\n")
+        writer.writeheader()
+        present = set()
+        for entry in reader:
+            key = normalize(entry.get("表記") or "")
+            if key in replacements and entry["読み"] == "要確認":
+                entry["読み"] = replacements[key]["reading"]
+            if key in original and not kana_reading(entry["読み"]):
+                continue
+            writer.writerow(entry)
+            present.add(key)
+        # Previously unresolved rows may have been excluded from this TSV.
+        marker = ENTRIES_RE.search(body, match.end())
+        group = json.loads(marker[1])["rows"] if marker else rows
+        for row in group:
+            key = normalize(row["word"])
+            if key in replacements and key not in present and kana_reading(replacements[key]["reading"]):
+                row = replacements[key]
+                writer.writerow({"読み": row["reading"], "表記": row["word"], "左ID": row["id"],
+                                 "右ID": row["id"], "品詞": row["pos"]})
+                present.add(key)
+        return "```tsv\n" + output.getvalue() + "```"
+
+    body = re.sub(r"```tsv\s*\n(.*?)```", tsv, body, flags=re.DOTALL)
+    notice = "読み未確定の語はTSVから除外しています。"
+    if any(row["reading"] == "要確認" for row in issue_rows({**issue, "body": body})):
+        if notice not in body:
+            body = body.replace("## TSV", "## TSV\n\n" + notice, 1)
+    else:
+        body = body.replace(notice + "\n\n", "")
+    return body
+
+
+def sync_seen_readings(rows: list[dict]) -> int:
+    if not SEEN_PATH.exists():
+        return 0
+    confirmed = {normalize(row["word"]): row["reading"] for row in rows if kana_reading(row["reading"])}
+    with SEEN_PATH.open(encoding="utf-8", newline="") as stream:
+        records = list(csv.DictReader(stream, delimiter="\t"))
+    changed = 0
+    for row in records:
+        reading = confirmed.get(normalize(row["word"]))
+        if reading and row["reading"] == "要確認":
+            row["reading"] = reading
+            changed += 1
+    if changed:
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="", dir=SEEN_PATH.parent,
+                                             prefix=".seen-", delete=False) as stream:
+                temporary = Path(stream.name)
+                writer = csv.DictWriter(stream, fieldnames=SEEN_FIELDS, delimiter="\t", lineterminator="\n")
+                writer.writeheader()
+                writer.writerows(records)
+            temporary.replace(SEEN_PATH)
+        finally:
+            if temporary:
+                temporary.unlink(missing_ok=True)
+    return changed
+
+
+def refresh_issue_readings(issues: list[dict], *, limit: int | None = 10,
+                           resolver: ReadingResolver | None = None, now: dt.datetime | None = None) -> int:
+    resolver = resolver or ReadingResolver(page_limit=None if limit is None else 20)
+    pending = [(issue["number"], normalize(row["word"]))
+               for issue in sorted(issues, key=lambda item: item["number"])
+               if re.fullmatch(r"新語候補 \d{4}-\d{2}-\d{2}", issue.get("title", ""))
+               for row in issue_rows(issue) if row["reading"] == "要確認"]
+    if pending and limit is not None:
+        offset = (now or dt.datetime.now(TZ)).date().toordinal() * limit % len(pending)
+        pending = (pending[offset:] + pending[:offset])[:limit]
+    selected = set(pending)
+    attempted = 0
+    changed = 0
+    confirmed = []
+    # Rotate the bounded daily backlog so later Issues also receive retries.
+    for issue in sorted(issues, key=lambda item: item["number"]):
+        if not re.fullmatch(r"新語候補 \d{4}-\d{2}-\d{2}", issue.get("title", "")):
+            continue
+        updates = {}
+        for row in issue_rows(issue):
+            if (issue["number"], normalize(row["word"])) not in selected:
+                continue
+            attempted += 1
+            print(f"Resolve existing reading: #{issue['number']} {row['word']}", flush=True)
+            updates[normalize(row["word"])] = resolver.resolve(row["word"], row.get("sources", []))
+        path = f"/repos/{REPO}/issues/{issue['number']}"
+        if updates:
+            current = github_api("GET", path)
+            body = replace_issue_readings(current, updates)
+            if body != (current.get("body") or ""):
+                current = github_api("PATCH", path, {"body": body})
+                changed += 1
+                print(f"Updated reading Issue: {current['html_url']}", flush=True)
+            issue.update(current)
+        # Also recover a local history update after a successful Issue PATCH.
+        confirmed.extend(issue_rows(issue))
+    saved = sync_seen_readings(confirmed)
+    print(f"Reading refresh: checked {attempted}, updated {changed} Issues, synced {saved} seen readings", flush=True)
+    resolved = sum(bool(kana_reading(row["reading"])) for row in confirmed)
+    write_summary(["## 読みの再確認", f"確認処理: {attempted}語 / Issue更新: {changed}件 / 履歴の読み更新: {saved}語",
+                   f"既存候補の確定済み: {resolved}語 / 未確定: {len(confirmed) - resolved}語"])
+    return changed
+
+
 def write_summary(lines: list[str]) -> None:
     path = os.environ.get("GITHUB_STEP_SUMMARY")
     if path:
@@ -537,6 +927,8 @@ def main(now: dt.datetime | None = None) -> int:
     print(f"Collect: Toronto {now:%Y-%m-%d %H:%M %Z}; daily limit {DAILY_LIMIT}", flush=True)
     try:
         issues = list_issues()
+        readings = ReadingResolver()
+        refresh_issue_readings(issues, resolver=readings, now=now)
         matches = [issue for issue in issues if issue.get("title") == title]
         existing = min(matches, key=lambda issue: issue["number"]) if matches else None
         previous_rows = issue_rows(existing) if existing else []
@@ -553,7 +945,7 @@ def main(now: dt.datetime | None = None) -> int:
             excluded.update(normalize(row["word"]) for row in issue_rows(issue))
         deferred = None
         try:
-            accepted = collect_candidates(now, excluded, fetch_id_map(), remaining)
+            accepted = collect_candidates(now, excluded, fetch_id_map(), remaining, readings)
         except CodeSearchDeferred as error:
             if not previous_rows:
                 raise
@@ -579,4 +971,13 @@ def main(now: dt.datetime | None = None) -> int:
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    if sys.argv[1:] == ["--refresh-readings"]:
+        try:
+            refresh_issue_readings(list_issues(), limit=None)
+        except Exception as error:
+            print(f"Reading refresh failed: {error}", file=sys.stderr)
+            raise SystemExit(1)
+    elif sys.argv[1:]:
+        raise SystemExit("Usage: collect_new_words.py [--refresh-readings]")
+    else:
+        raise SystemExit(main())
