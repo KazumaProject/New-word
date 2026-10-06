@@ -64,7 +64,7 @@ ORG_HINTS = (
     "チーム", "委員会", "協会", "機構", "財団", "連盟",
 )
 QUOTE_RE = re.compile(r'[「『“"]([^」』”"]{2,60})[」』”"]')
-ASCII_NAME_RE = re.compile(r"\b(?:[A-Z][A-Za-z0-9+._-]*)(?:\s+[A-Z][A-Za-z0-9+._-]*){0,4}\b")
+ASCII_NAME_RE = re.compile(r"(?<![A-Za-z0-9])(?:[A-Z][A-Za-z0-9+._-]*)(?:\s+[A-Z][A-Za-z0-9+._-]*){0,4}(?![A-Za-z0-9])")
 ENTRIES_RE = re.compile(r"<!-- new-word-entries\s*\n(.*?)\n-->", re.DOTALL)
 
 
@@ -264,6 +264,11 @@ def clean_candidate(raw: str) -> str | None:
         return None
     if re.search(r"(とは|について|に関する|を発表|を提供|を開始|を開発)$", s):
         return None
+    # Quotations often contain headlines, slogans and descriptions, not names.
+    if re.search(r"[。！？!?、,]|(?:に見える|に決めた|すべは|を実現|できます|しました|している|という|の理由|はない|ではない)", s):
+        return None
+    if re.search(r"(?:を|が|は|に)[一-龠ぁ-ん]*(?:する|した|なる|できる|創る|変える|届ける|ます|ません)$", s):
+        return None
     if len(re.findall(r"[ぁ-んァ-ヶ一-龠A-Za-z]", s)) < 2:
         return None
     return s
@@ -274,13 +279,26 @@ def extract_candidates(title: str) -> set[str]:
     found = set()
     for match in QUOTE_RE.finditer(body):
         candidate = clean_candidate(match.group(1))
-        if candidate:
+        if candidate and name_context(body, match.start(), match.end()):
             found.add(candidate)
     for match in ASCII_NAME_RE.finditer(body):
+        if any(quote.start() <= match.start() < quote.end() for quote in QUOTE_RE.finditer(body)):
+            continue
         candidate = clean_candidate(match.group(0))
-        if candidate and len(candidate) >= 3 and candidate.lower() not in {"ai", "dx", "iot"}:
+        if (candidate and len(candidate) >= 3 and candidate.lower() not in {"ai", "dx", "iot"}
+                and name_context(body, match.start(), match.end())):
             found.add(candidate)
+    # Do not extract a shorter ASCII fragment from a quoted product name.
+    found = {word for word in found if not any(word != other and word in other for other in found)}
     return found
+
+
+def name_context(title: str, start: int, end: int) -> bool:
+    """Require a local naming cue, rather than an announcement anywhere in a title."""
+    before, after = title[max(0, start - 24):start], title[end:end + 30]
+    category = r"(?:新製品|新サービス|新技術|新機能|新ブランド|新モデル|製品|サービス|技術|ブランド|モデル|アプリ|ゲーム|研究所|名称|名付けた|名づけた|命名)"
+    return bool(re.search(category + r"[『「“\"\s:：]*$", before)
+                or re.match(r"[』」”\"\s]*(?:という|と呼ばれる|と名付け|と命名|を(?:発表|発売|提供|開発|公開|リリース)|が(?:登場|発売)|の(?:提供|販売|発売))", after))
 
 
 def kana_reading(value: str) -> str | None:
@@ -430,6 +448,44 @@ class ReadingResolver:
         self.documents = {}
         self.results = {}
 
+    def estimate(self, word: str, sources: list[dict]) -> str | None:
+        """Suggest a complete reading; never promote a guess to a confirmed reading."""
+        text = unicodedata.normalize("NFKC", word)
+        context = normalize(" ".join(source.get("title", "") for source in sources))
+        letters = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ", (
+            "えー", "びー", "しー", "でぃー", "いー", "えふ", "じー", "えいち", "あい",
+            "じぇー", "けー", "える", "えむ", "えぬ", "おー", "ぴー", "きゅー", "あーる",
+            "えす", "てぃー", "ゆー", "ぶい", "だぶりゅー", "えっくす", "わい", "ぜっと")))
+        # Reuse reviewed components only in the same context. Split at word
+        # boundaries so a short name does not rewrite part of another brand.
+        parts = re.findall(r"[A-Za-z]+|\d+(?:\.\d+)?|[一-龠々ぁ-ゖァ-ヶー]+|[^\w\s]", text)
+        if "".join(parts) != re.sub(r"\s+", "", text):
+            return None
+        result = []
+        for part in parts:
+            entry = self.reviewed.get(normalize(part))
+            if entry and (not entry.get("context") or any(normalize(term) in context for term in entry["context"])):
+                result.append(entry["reading"])
+            elif kana := kana_reading(part):
+                result.append(kana)
+            elif re.fullmatch(r"[A-Z]{2,6}", part):
+                result.append("".join(letters[ch] for ch in part))
+            elif re.fullmatch(r"[一-龠々ぁ-ゖァ-ヶー]+", part):
+                try:
+                    from pykakasi import kakasi
+                except ImportError:
+                    return None
+                converted = kana_reading("".join(item["hira"] for item in kakasi().convert(part)))
+                if not converted:
+                    return None
+                result.append(converted)
+            elif part == "-":
+                continue
+            else:
+                # Unknown English names and numbers have multiple possible readings.
+                return None
+        return kana_reading("".join(result))
+
     def resolve(self, word: str, sources: list[dict]) -> dict:
         key = normalize(word)
         context = normalize(" ".join(source.get("title", "") for source in sources))
@@ -480,6 +536,9 @@ class ReadingResolver:
                      "unconfirmed": "出典に読みの明記が見つからないため確認待ち"}
             result = {"reading": "要確認", "reading_status": status, "reading_method": "", "reading_sources": [],
                       "reading_note": notes[status]}
+            if not found and (estimate := self.estimate(word, sources)):
+                result["reading_estimate"] = estimate
+                result["reading_note"] += f" / 推定読み: {estimate}（未確認・TSV対象外）"
         self.results[cache_key] = result
         return result.copy()
 

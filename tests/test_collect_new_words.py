@@ -289,14 +289,15 @@ class CollectorTests(unittest.TestCase):
     def test_existing_daily_issue_survives_when_no_additions_exist(self):
         original = issue(1, [candidate("既存候補")], extra="\n手書きメモ")
         self.github = FakeGitHub([original])
-        self.assertEqual(self.run_main(), 0)
+        with patch.object(collector.ReadingResolver, "estimate", return_value=None):
+            self.assertEqual(self.run_main(), 0)
         self.assertEqual(self.github.issues, [original])
 
     def test_existing_daily_issue_is_successful_when_further_search_is_deferred(self):
         original = issue(1, [candidate("掲載済みの候補")])
         self.github = FakeGitHub([original])
         self.rss = evidence("追加の未確認語")
-        with patch.object(collector, "already_in_japanese_keyboard", side_effect=collector.CodeSearchDeferred("628s cooldown")):
+        with patch.object(collector.ReadingResolver, "estimate", return_value=None), patch.object(collector, "already_in_japanese_keyboard", side_effect=collector.CodeSearchDeferred("628s cooldown")):
             self.assertEqual(self.run_main(), 0)
         self.assertEqual(self.github.issues, [original])
         self.assertEqual(collector.load_seen(), {"掲載済みの候補"})
