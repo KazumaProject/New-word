@@ -102,7 +102,7 @@ class DictionaryIndex:
 
     def _verify(self, archive: bytes, bundle: bytes):
         manifest = self.manifest
-        if manifest.get("schemaVersion") != 1 or manifest.get("dictionaryRelease") != self.release:
+        if type(manifest.get("schemaVersion")) is not int or manifest["schemaVersion"] != 1 or manifest.get("dictionaryRelease") != self.release:
             raise DictionaryIndexError("Dictionary manifest version/release mismatch")
         for field in ("converterCommit", "mozcCommit", "idDefSha256"):
             width = 64 if field == "idDefSha256" else 40

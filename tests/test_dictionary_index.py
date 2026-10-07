@@ -58,6 +58,7 @@ class DictionaryIndexTests(unittest.TestCase):
         for mutate in (
             lambda m: m.update(dictionaryRelease="wrong"),
             lambda m: m.update(schemaVersion=99),
+            lambda m: m.update(schemaVersion=True),
             lambda m: m.update(mozcCommit="master"),
             lambda m: m["index"].update(sha256="0" * 64),
             lambda m: m["assets"].update(sha256="0" * 64),

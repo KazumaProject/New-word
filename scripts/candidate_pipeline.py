@@ -67,6 +67,8 @@ def save_pending(path: Path, rows: dict[str, dict]):
 
 
 def publisher_family(item: dict, c) -> str:
+    if item.get("publisher_family"):
+        return item["publisher_family"]
     text = item.get("description", "") + " " + item.get("source", "")
     for agency in ("共同通信", "時事通信", "ロイター", "Reuters", "PR TIMES"):
         if agency in text:
@@ -135,7 +137,7 @@ def document(link: str, readings, c):
 
 def verified_usage(word: str, sources: list[dict], readings, c) -> list[dict]:
     """Verify the pages and collapse common syndication despite different headlines."""
-    selected, urls, bodies = [], set(), []
+    selected, urls, hosts, families, bodies = [], set(), set(), set(), []
     for source in sources:
         page = document(source["link"], readings, c)
         if page is None:
@@ -149,14 +151,18 @@ def verified_usage(word: str, sources: list[dict], readings, c) -> list[dict]:
         if c.normalize(word) not in text or not re.search(r"[ぁ-ゖァ-ヶ一-龠]", text):
             continue
         parsed = urllib.parse.urlsplit(direct)
+        host = (parsed.hostname or "").lower().removeprefix("www.")
+        family = publisher_family({**source, "description": source.get("description", "") + " " + text}, c)
         query = urllib.parse.urlencode([(key, value) for key, value in urllib.parse.parse_qsl(parsed.query) if not key.startswith("utm_") and key not in {"fbclid", "gclid"}])
         identity = urllib.parse.urlunsplit((parsed.scheme, parsed.netloc.lower(), parsed.path, query, ""))
         # Identical visible articles on different sites remain one usage source.
-        if identity in urls or any(text == body or (len(text) >= 200 and len(body) >= 200 and
+        if identity in urls or host in hosts or family in families or any(text == body or (len(text) >= 200 and len(body) >= 200 and
                 difflib.SequenceMatcher(None, text[:8000], body[:8000]).ratio() >= .94) for body in bodies):
             continue
-        selected.append({**source, "link": direct})
+        selected.append({**source, "link": direct, "publisher_family": family})
         urls.add(identity)
+        hosts.add(host)
+        families.add(family)
         bodies.append(text)
     return selected
 
@@ -285,7 +291,7 @@ def collect(now, excluded, id_map, limit, readings, dictionary, pending, categor
     # discovery cannot indefinitely starve terms that need another attempt.
     eligible_pending = [key for key in previous_pending if key in pending and pending[key].get("last_attempt") != now.date().isoformat()]
     if eligible_pending:
-        offset = now.date().toordinal() % len(eligible_pending)
+        offset = now.date().toordinal() * 10 % len(eligible_pending)
         page_limit = readings.page_limit
         if page_limit is not None:
             readings.page_limit = min(page_limit, readings.page_count + max(1, page_limit // 2))

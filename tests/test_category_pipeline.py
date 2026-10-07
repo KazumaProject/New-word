@@ -74,6 +74,18 @@ class CategoryPipelineTests(unittest.TestCase):
         with patch.object(collector.ReadingResolver, "resolve", return_value={"reading": "要確認", "reading_status": "unconfirmed"}) as resolver:
             self.assertEqual(self.run_main(), 0)
             self.assertEqual(resolver.call_count, 10)
+    def test_pending_retry_rotates_to_a_new_batch_on_the_next_day(self):
+        rows = {f"name{i}": {**candidate(f"Name{i}"), "categories": ["technology"], "kind": "common"} for i in range(25)}
+        pipeline.save_pending(collector.PENDING_PATH, rows)
+        with patch.object(collector.ReadingResolver, "resolve", return_value={"reading": "要確認", "reading_status": "unconfirmed"}) as resolver:
+            self.assertEqual(self.run_main(), 0)
+            first = {call.args[0] for call in resolver.call_args_list}
+            resolver.reset_mock()
+            self.assertEqual(self.run_main(NOW + dt.timedelta(days=1)), 0)
+            second = {call.args[0] for call in resolver.call_args_list}
+        self.assertEqual(len(first), 10)
+        self.assertEqual(len(second), 10)
+        self.assertTrue(first.isdisjoint(second))
     def test_named_products_without_official_evidence_stay_pending(self):
         self.rss = evidence("クラウドノヴァ")
         for source in self.rss:
@@ -172,6 +184,15 @@ class CategoryPipelineTests(unittest.TestCase):
         self.assertEqual(len(result), 1)
         with patch.object(collector, "public_reading_document", side_effect=ValueError("unavailable")):
             self.assertEqual(pipeline.verified_usage("別語", evidence("別語"), collector.ReadingResolver(), SimpleNamespace(**vars(collector))), [])
+    def test_agency_credit_in_different_page_bodies_counts_once(self):
+        sources = evidence("語彙テスト")
+        for number, source in enumerate(sources):
+            source["link"] = f"https://publisher{number}.example/article"
+        def page(link):
+            return '<p>語彙テストを紹介する日本語記事。共同通信配信。</p><footer>' + link + '</footer>'
+        with patch.object(collector, "public_reading_document", side_effect=page):
+            result = pipeline.verified_usage("語彙テスト", sources, collector.ReadingResolver(), SimpleNamespace(**vars(collector)))
+        self.assertEqual(len(result), 1)
     def test_page_budget_is_shared_by_usage_and_reading_verification(self):
         resolver = collector.ReadingResolver(page_limit=1)
         with patch.object(collector, "public_reading_document", return_value='<p>語彙テスト（ゴイテスト）を解説します。</p>') as fetch:
