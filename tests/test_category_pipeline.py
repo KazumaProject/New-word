@@ -177,6 +177,8 @@ class CategoryPipelineTests(unittest.TestCase):
         self.assertEqual(pipeline.independent_sources([first, second], context), [])
     def test_identical_body_reposts_and_unavailable_pages_are_not_two_usages(self):
         sources = evidence("語彙テスト")
+        for number, source in enumerate(sources):
+            source["link"] = f"https://publisher{number}.example/article"
         resolver = collector.ReadingResolver()
         markup = '<p>語彙テスト（ゴイテスト）の日本語使用例です。</p>'
         with patch.object(collector, "public_reading_document", return_value=markup):

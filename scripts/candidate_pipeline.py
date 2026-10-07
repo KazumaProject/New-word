@@ -69,9 +69,9 @@ def save_pending(path: Path, rows: dict[str, dict]):
 def publisher_family(item: dict, c) -> str:
     if item.get("publisher_family"):
         return item["publisher_family"]
-    text = item.get("description", "") + " " + item.get("source", "")
+    text = c.normalize(item.get("description", "") + " " + item.get("source", ""))
     for agency in ("共同通信", "時事通信", "ロイター", "Reuters", "PR TIMES"):
-        if agency in text:
+        if c.normalize(agency) in text:
             return c.normalize(agency)
     return c.normalize(item.get("source", ""))
 
