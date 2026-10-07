@@ -7,6 +7,14 @@ on:
         description: "既存Issueの読みだけを更新（新規収集なし）"
         type: boolean
         default: false
+      check_dictionary_only:
+        description: "辞書索引だけを検証（Issue・履歴の変更なし）"
+        type: boolean
+        default: false
+      dictionary_release:
+        description: "検証対象のconverterリリース（空欄は最新のv*リリース）"
+        type: string
+        default: ''
   schedule:
     - cron: "0 19 * * *"
       timezone: America/Toronto
@@ -21,6 +29,8 @@ concurrency:
 
 jobs:
   collect:
+    # Publish and validate the converter export before enabling scheduled collection.
+    if: github.event_name == 'workflow_dispatch' || vars.IME_COLLECTION_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -35,25 +45,33 @@ jobs:
         run: python3 -B -m unittest discover -s tests -v
 
       - name: Collect new words
+        id: collect_words
         env:
           GH_TOKEN: ${{ github.token }}
-          CODE_SEARCH_TOKEN: ${{ secrets.CODE_SEARCH_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           REFRESH_READINGS: ${{ inputs.refresh_readings }}
+          CHECK_DICTIONARY_ONLY: ${{ inputs.check_dictionary_only }}
+          DICTIONARY_RELEASE: ${{ inputs.dictionary_release }}
         run: |
-          if [ "$REFRESH_READINGS" = "true" ]; then
+          if [ "$CHECK_DICTIONARY_ONLY" = "true" ]; then
+            python3 scripts/collect_new_words.py --check-dictionary
+          elif [ "$REFRESH_READINGS" = "true" ]; then
             python3 scripts/collect_new_words.py --refresh-readings
           else
             python3 scripts/collect_new_words.py
           fi
 
-      - name: Commit seen-word database
+      - name: Commit published history and pending queue
+        if: always() && steps.collect_words.outcome != 'skipped'
         run: |
-          if git diff --quiet -- data/seen.tsv; then
+          git add -- data/seen.tsv
+          if [ -f data/pending.json ]; then
+            git add -- data/pending.json
+          fi
+          if git diff --cached --quiet -- data/seen.tsv data/pending.json; then
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add data/seen.tsv
-          git commit -m "chore: update seen new words"
+          git commit -m "chore: update published words and pending candidates"
           git push

@@ -1,0 +1,11 @@
+[
+  {"id":"life_food","label":"生活・食","queries":[{"q":"生活 食 新語 用語","kind":"common"},{"q":"料理 食品 新名称","kind":"product"}]},
+  {"id":"technology","label":"IT・AI","queries":[{"q":"IT AI 技術 用語","kind":"common"},{"q":"AI ソフトウェア 新モデル 発表","kind":"product"}]},
+  {"id":"science_health","label":"科学・医療","queries":[{"q":"科学 医療 新用語","kind":"common"},{"q":"研究 新技術 命名","kind":"common"}]},
+  {"id":"business","label":"社会・ビジネス","queries":[{"q":"経済 ビジネス 新用語","kind":"common"},{"q":"社会 新制度 名称","kind":"proper"}]},
+  {"id":"entertainment","label":"ゲーム・アニメ・音楽","queries":[{"q":"ゲーム アニメ 新作 発表","kind":"work"},{"q":"音楽 新曲 タイトル 発表","kind":"work"}]},
+  {"id":"products","label":"製品・サービス・ブランド","queries":[{"q":"\"新製品\" \"発表\"","kind":"product"},{"q":"\"新サービス\" \"提供開始\"","kind":"product"}]},
+  {"id":"people_organizations","label":"人名・組織","queries":[{"q":"新人 人名 デビュー","kind":"person"},{"q":"新組織 新研究所 名称","kind":"organization"}]},
+  {"id":"places","label":"地名・施設","queries":[{"q":"新施設 新駅 名称 開業","kind":"place"},{"q":"地名 新設 名称","kind":"place"}]},
+  {"id":"slang","label":"ネット語・俗語","queries":[{"q":"新語 若者言葉 ネット用語","kind":"common"},{"q":"流行語 俗語 意味","kind":"common"}]}
+]
