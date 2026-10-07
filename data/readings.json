@@ -58,5 +58,17 @@
     "context": ["ボトムズ"],
     "sources": [{"source": "サンライズワールド 公式作品情報", "link": "https://www.sunrise-world.net/news/news.php?id=25677"}],
     "note": "公式の作品名読み「ハイイロノヘクセ」で確認"
+  },
+  {
+    "word": "ぬい活",
+    "reading": "ぬいかつ",
+    "sources": [
+      {
+        "source": "ITmedia PC USER（鈴木朋子）",
+        "link": "https://www.itmedia.co.jp/pcuser/articles/2512/02/news065.html",
+        "title": "なぜぬい活が流行？ 爆売れラブブと自撮り代わりの若者心理"
+      }
+    ],
+    "note": "記事の明示的な読み（ぬいかつ）で確認"
   }
 ]

@@ -30,11 +30,8 @@ SEEN_PATH = Path("data/seen.tsv")
 READINGS_PATH = Path(__file__).resolve().parents[1] / "data/readings.json"
 SEEN_FIELDS = ["date", "reading", "word", "pos", "id", "normalized"]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dictionary_index import DictionaryIndex
 import candidate_pipeline
 
-DICTIONARY_REPOSITORY = os.environ.get("DICTIONARY_REPOSITORY", "KazumaProject/kotlin-kana-kanji-converter")
-DICTIONARY_RELEASE = os.environ.get("DICTIONARY_RELEASE", "")
 PENDING_PATH = Path("data/pending.json")
 CATEGORIES = candidate_pipeline.load_categories(Path(__file__).resolve().parents[1] / "data/categories.json")
 
@@ -531,7 +528,7 @@ def issue_rows(issue: dict) -> list[dict]:
     result = {}
     for match in ENTRIES_RE.finditer(body):
         data = json.loads(match.group(1))
-        if data.get("version") not in {1, 2} or not isinstance(data.get("rows"), list):
+        if data.get("version") not in {1, 2, 3} or not isinstance(data.get("rows"), list):
             raise RuntimeError(f"Issue #{issue['number']} has unsupported candidate metadata")
         for row in data["rows"]:
             if not isinstance(row, dict) or any(not isinstance(row.get(field), str) for field in SEEN_FIELDS):
@@ -539,20 +536,23 @@ def issue_rows(issue: dict) -> list[dict]:
             key = normalize(row["word"])
             if not key or normalize(row["normalized"]) != key:
                 raise RuntimeError(f"Issue #{issue['number']} has inconsistent candidate metadata")
-            if data["version"] == 2:
+            if data["version"] in {2, 3}:
                 allowed = {category["id"] for category in CATEGORIES}
                 if (not isinstance(row.get("categories"), list) or not row["categories"]
                         or any(category not in allowed for category in row["categories"])
-                        or row.get("category") != row["categories"][0]
-                        or not isinstance(row.get("dictionary"), dict)
+                        or row.get("category") != row["categories"][0]):
+                    raise RuntimeError(f"Issue #{issue['number']} has invalid category metadata")
+                if data["version"] == 2 and (not isinstance(row.get("dictionary"), dict)
                         or not row["dictionary"].get("release")
                         or not re.fullmatch(r"[0-9a-f]{64}", row["dictionary"].get("manifest_sha256", ""))):
                     raise RuntimeError(f"Issue #{issue['number']} has invalid verified candidate metadata")
+                if data["version"] == 3 and (row.get("dictionary_check") != {"status": "not_checked"} or row["id"] or row.get("dictionary")):
+                    raise RuntimeError(f"Issue #{issue['number']} has invalid collection-only metadata")
             result[key] = row
     for match in re.finditer(r"```tsv\s*\n(.*?)```", body, re.DOTALL):
         for row in csv.DictReader(io.StringIO(match.group(1)), delimiter="\t"):
             word = row.get("表記")
-            if not word or not all(row.get(field) for field in ("読み", "左ID", "品詞")):
+            if not word or not all(row.get(field) for field in ("読み", "品詞")) or (not row.get("左ID") and row.get("辞書照合") != "未確認"):
                 continue
             key = normalize(word)
             result.setdefault(key, {
@@ -565,7 +565,7 @@ def issue_rows(issue: dict) -> list[dict]:
     visible = []
     for line in body.splitlines():
         cells = line.split("|")
-        if line.startswith("|") and len(cells) == 8:
+        if line.startswith("|") and len(cells) in {7, 8}:
             visible.append((html.unescape(cells[2].strip()), html.unescape(cells[1].strip())))
     for match in re.finditer(r"```tsv\s*\n(.*?)```", body, re.DOTALL):
         visible.extend((row.get("表記", ""), row.get("読み", ""))
@@ -596,9 +596,6 @@ def select_sources(items: list[dict[str, str]]) -> list[dict[str, str]]:
     return []
 
 
-def load_dictionary_index():
-    return DictionaryIndex.fetch(github_api, request, DICTIONARY_REPOSITORY, DICTIONARY_RELEASE)
-
 
 def require_official_name(word, sources, readings):
     return candidate_pipeline.official_name(word, sources, readings, SimpleNamespace(**globals()))
@@ -608,8 +605,8 @@ def verify_usage_sources(word, sources, readings):
     return candidate_pipeline.verified_usage(word, sources, readings, SimpleNamespace(**globals()))
 
 
-def collect_candidates(now, excluded, id_map, limit, readings, *, dictionary, pending):
-    return candidate_pipeline.collect(now, excluded, id_map, limit, readings, dictionary, pending, CATEGORIES, SimpleNamespace(**globals()))
+def collect_candidates(now, excluded, limit, readings, *, pending):
+    return candidate_pipeline.collect(now, excluded, limit, readings, pending, CATEGORIES, SimpleNamespace(**globals()))
 
 
 def markdown_cell(value: str) -> str:
@@ -617,10 +614,13 @@ def markdown_cell(value: str) -> str:
 
 
 def render_rows(rows: list[dict]) -> str:
+    review = bool(rows) and all(row.get("dictionary_check") == {"status": "not_checked"} for row in rows)
     lines = [
         "| 読み | 表記 | Mozc品詞 | id.def ID | 根拠/出典 | 備考 |",
         "|---|---|---|---:|---|---|",
     ]
+    if review:
+        lines = ["| 読み | 表記 | 品詞 | 根拠/出典 | 備考 |", "|---|---|---|---|---|"]
     for row in rows:
         sources = "<br>".join(
             f"[{markdown_cell(source['source'])}](<{source['link']}>)" for source in row["sources"]
@@ -638,7 +638,7 @@ def render_rows(rows: list[dict]) -> str:
             if row.get("reading_note"):
                 notes.append(markdown_cell(row["reading_note"]))
         if row["supplement"]:
-            notes.append("補充候補: 過去の未登録語を含む")
+            notes.append("補充候補: 過去の記事も対象")
         if row.get("official_name_sources"):
             notes.append("公式名称: " + "、".join(
                 f"[{markdown_cell(source['source'])}](<{source['link']}>)"
@@ -646,16 +646,18 @@ def render_rows(rows: list[dict]) -> str:
             ))
         lines.append(
             f"| {markdown_cell(row['reading'])} | {markdown_cell(row['word'])} | "
-            f"`{row['pos']}` | {row['id']} | {sources} | {' / '.join(notes)} |"
+            f"`{row['pos']}` | " + ("" if review else f"{row['id']} | ") + f"{sources} | {' / '.join(notes)} |"
         )
     verified = bool(rows) and all(row.get("dictionary") and row.get("categories") for row in rows)
-    fields = ["読み", "表記", "左ID", "右ID", "品詞"] + (["分類", "辞書リリース", "辞書リポジトリ", "辞書manifestSHA256"] if verified else [])
+    fields = ["読み", "表記", "左ID", "右ID", "品詞"] + (["分類", "辞書照合"] if review else ["分類", "辞書リリース", "辞書リポジトリ", "辞書manifestSHA256"] if verified else [])
     lines += ["", "## TSV", "", "```tsv", "\t".join(fields)]
     for row in rows:
         if kana_reading(row["reading"]):
             output = io.StringIO()
             values = [row["reading"], row["word"], row["id"], row["id"], row["pos"]]
-            if verified:
+            if review:
+                values += [",".join(row["categories"]), "未確認"]
+            elif verified:
                 values += [",".join(row["categories"]), row["dictionary"]["release"], row["dictionary"]["repository"], row["dictionary"]["manifest_sha256"]]
             csv.writer(output, delimiter="\t", lineterminator="").writerow(values)
             lines.append(output.getvalue())
@@ -663,7 +665,7 @@ def render_rows(rows: list[dict]) -> str:
         lines.insert(lines.index("```tsv"), "読み未確定の語はTSVから除外しています。\n")
     lines += ["```", ""]
     # Escape comment delimiters so a candidate cannot truncate the metadata.
-    metadata = json.dumps({"version": 2 if verified else 1, "rows": rows}, ensure_ascii=False).replace("--", "\\u002d\\u002d")
+    metadata = json.dumps({"version": 3 if review else 2 if verified else 1, "rows": rows}, ensure_ascii=False).replace("--", "\\u002d\\u002d")
     lines += ["<!-- new-word-entries", metadata, "-->"]
     return "\n".join(lines)
 
@@ -671,12 +673,13 @@ def render_rows(rows: list[dict]) -> str:
 def render_grouped_rows(rows: list[dict]) -> str:
     if not rows or not all(row.get("category") for row in rows):
         return render_rows(rows)
+    separator = "\n\n## TSV\n\n"
     groups = []
     for category in CATEGORIES:
         group = [row for row in rows if row["category"] == category["id"]]
         if group:
-            checked = group[0]["dictionary"]
-            groups.append(f"## {category['label']}\n\n辞書確認: [{markdown_cell(checked['release'])}](<{checked['url']}>)\n\n" + render_rows(group))
+            groups.append(f"## {category['label']}\n\n" + render_rows(group).split(separator, 1)[0])
+    groups.append("## TSV\n\n" + render_rows(rows).split(separator, 1)[1])
     return "\n\n".join(groups)
 
 
@@ -684,11 +687,11 @@ def render_issue(title: str, rows: list[dict]) -> str:
     return "\n".join([
         f"# {title}", "", render_grouped_rows(rows), "", "## 確認範囲", "",
         f"- 過去の {REPO} Issue と data/seen.tsv による掲載済み語の除外",
-        "- converter が出力した全辞書パックの検証済み索引による表記の完全一致確認",
-        "- NFKC・空白・英字大小を正規化。同じ表記が別の読みで存在する場合も除外",
+        "- 辞書照合は未確認。掲載語が辞書に未収録であるとは判定していません",
+        "- 掲載済み語の重複はNFKC・空白・英字大小を正規化して除外",
         "- 読み確認済みの名詞・固有名詞のみ。推定読みは掲載しません",
-        "- 未確定語は data/pending.json に保存。TSVはレビュー候補で、辞書への自動登録は行いません",
-        "", "_Generated automatically by GitHub Actions without a paid AI API._",
+        "- 未確定語は data/pending.json に保存。TSVはレビュー候補。品詞IDは辞書接続まで空欄",
+        "", "_日本語での使用例と読みを確認したIME用のレビュー候補です。_",
     ])
 
 
@@ -747,7 +750,7 @@ def replace_issue_readings(issue: dict, updates: dict[str, dict]) -> str:
         if not line.startswith("|"):
             continue
         cells = line.rstrip("\r\n").split("|")
-        if len(cells) != 8:
+        if len(cells) not in {7, 8}:
             continue
         key = normalize(html.unescape(cells[2].strip()))
         row = replacements.get(key)
@@ -787,7 +790,7 @@ def replace_issue_readings(issue: dict, updates: dict[str, dict]) -> str:
             if key in replacements and key not in present and kana_reading(replacements[key]["reading"]):
                 row = replacements[key]
                 entry = {"読み": row["reading"], "表記": row["word"], "左ID": row["id"], "右ID": row["id"], "品詞": row["pos"],
-                         "分類": ",".join(row.get("categories", [])), "辞書リリース": row.get("dictionary", {}).get("release", ""),
+                         "分類": ",".join(row.get("categories", [])), "辞書照合": "未確認" if row.get("dictionary_check") == {"status": "not_checked"} else "", "辞書リリース": row.get("dictionary", {}).get("release", ""),
                          "辞書リポジトリ": row.get("dictionary", {}).get("repository", ""),
                          "辞書manifestSHA256": row.get("dictionary", {}).get("manifest_sha256", "")}
                 writer.writerow({field: entry.get(field, "") for field in reader.fieldnames})
@@ -894,14 +897,7 @@ if __name__ == "__main__":
         except Exception as error:
             print(f"Reading refresh failed: {error}", file=sys.stderr)
             raise SystemExit(1)
-    elif sys.argv[1:] == ["--check-dictionary"]:
-        try:
-            with load_dictionary_index() as dictionary:
-                print(f"Verified {dictionary.repository}@{dictionary.release}: {len(dictionary.manifest['packs'])} packs, {dictionary.manifest['index']['rows']} entries")
-        except Exception as error:
-            print(f"Dictionary verification failed: {error}", file=sys.stderr)
-            raise SystemExit(1)
     elif sys.argv[1:]:
-        raise SystemExit("Usage: collect_new_words.py [--refresh-readings | --check-dictionary]")
+        raise SystemExit("Usage: collect_new_words.py [--refresh-readings]")
     else:
         raise SystemExit(main())

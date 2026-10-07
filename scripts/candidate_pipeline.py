@@ -232,17 +232,17 @@ def round_robin(rows: list[dict], categories: list[dict], limit: int) -> list[di
     return result
 
 
-def collect(now, excluded, id_map, limit, readings, dictionary, pending, categories, c):
+def collect(now, excluded, limit, readings, pending, categories, c):
     order = [category["id"] for category in categories]
     evidence, ready, attempted = {}, {}, set()
     previous_pending = list(sorted(pending))
     for key in list(pending):
-        if key in excluded or dictionary.contains(pending[key]["word"]):
+        if key in excluded:
             del pending[key]
 
     def resolve(key, entry):
         word = entry["word"]
-        if key in excluded or dictionary.contains(word):
+        if key in excluded:
             return
         tags = [category for category in order if category in entry["categories"]]
         if not tags:
@@ -251,7 +251,8 @@ def collect(now, excluded, id_map, limit, readings, dictionary, pending, categor
         kinds = set(entry.get("kinds", [entry.get("kind", "common")])) - {"common"}
         kind = next(iter(kinds)) if len(kinds) == 1 else "proper" if kinds else "common"
         row = {**pending.get(key, {}), **entry, "date": now.date().isoformat(), "normalized": key, "categories": tags, "category": tags[0], "kind": kind,
-               "last_attempt": now.date().isoformat(), "dictionary": dictionary.verification()}
+               "last_attempt": now.date().isoformat(), "dictionary_check": {"status": "not_checked"}}
+        row.pop("dictionary", None)
         if len(sources) < 2:
             ready.pop(key, None)
             row["pending_reason"] = "独立した日本語使用例が2件未満"
@@ -270,14 +271,12 @@ def collect(now, excluded, id_map, limit, readings, dictionary, pending, categor
         row["sources"] = sources
         row.update(readings.resolve(word, sources))
         pos = c.pos_label(word, kind)
-        row.update(pos=pos, id=str(id_map.get(pos, "")))
+        row.update(pos=pos, id="")
         if row.get("reading_status") != "confirmed" or not c.kana_reading(row["reading"]):
             row["pending_reason"] = row.get("reading_note", "読み未確認")
         elif c.normalize(row["reading"]) == key:
             pending.pop(key, None)
             return
-        elif not row["id"]:
-            row["pending_reason"] = "辞書のMozc品詞IDを確認できない"
         else:
             row["official_name_sources"] = c.require_official_name(word, sources, readings) if kind != "common" else []
             if kind != "common" and not row["official_name_sources"]:
@@ -321,8 +320,8 @@ def collect(now, excluded, id_map, limit, readings, dictionary, pending, categor
                         continue
                     for word in sorted(c.extract_candidates(item["title"])):
                         key = c.normalize(word)
-                        if key in excluded or dictionary.contains(word):
-                            counts["already_registered_or_seen"] += 1
+                        if key in excluded:
+                            counts["already_seen"] += 1
                             continue
                         if key not in evidence:
                             previous = pending.get(key, {})
@@ -359,46 +358,45 @@ def run(c, now=None) -> int:
     title = f"新語候補 {now.date().isoformat()}"
     print(f"Collect: Toronto {now:%Y-%m-%d %H:%M %Z}; daily limit {c.DAILY_LIMIT}", flush=True)
     try:
-        with c.load_dictionary_index() as dictionary:
-            issues = c.list_issues()
-            readings = c.ReadingResolver()
-            matches = [issue for issue in issues if issue.get("title") == title]
-            existing = min(matches, key=lambda issue: issue["number"]) if matches else None
-            previous = c.issue_rows(existing) if existing else []
-            c.append_seen(previous)
-            excluded = c.load_seen()
-            for issue in issues:
-                excluded.update(c.normalize(row["word"]) for row in c.issue_rows(issue))
-            pending = load_pending(c.PENDING_PATH, c.normalize)
-            for key in list(pending):
-                if key in excluded or dictionary.contains(pending[key]["word"]):
-                    del pending[key]
-            remaining = max(0, c.DAILY_LIMIT - len(previous))
-            if remaining == 0:
-                save_pending(c.PENDING_PATH, pending)
-                c.write_summary([f"## {title}", f"掲載済み: {len(previous)}語。上限に達しているため追加なし。", existing["html_url"]])
-                return 0
-            try:
-                accepted = c.collect_candidates(now, excluded, dictionary.pos_ids, remaining, readings, dictionary=dictionary, pending=pending)
-            except Exception:
-                save_pending(c.PENDING_PATH, pending)
-                raise
+        issues = c.list_issues()
+        readings = c.ReadingResolver()
+        matches = [issue for issue in issues if issue.get("title") == title]
+        existing = min(matches, key=lambda issue: issue["number"]) if matches else None
+        previous = c.issue_rows(existing) if existing else []
+        c.append_seen(previous)
+        excluded = c.load_seen()
+        for issue in issues:
+            excluded.update(c.normalize(row["word"]) for row in c.issue_rows(issue))
+        pending = load_pending(c.PENDING_PATH, c.normalize)
+        for key in list(pending):
+            if key in excluded:
+                del pending[key]
+        remaining = max(0, c.DAILY_LIMIT - len(previous))
+        if remaining == 0:
             save_pending(c.PENDING_PATH, pending)
-            if not accepted:
-                lines = [f"## {title}", "確認済みの追加候補なし。空のIssueは作成しません。", f"確認辞書: {dictionary.release} / 保留: {len(pending)}語"]
-                if previous:
-                    lines += [f"掲載済み: {len(previous)}語。追加候補なし。", existing["html_url"]]
-                c.write_summary(lines)
-                return 0
-            url, published = c.publish_candidates(title, accepted, existing)
-            saved = c.append_seen(published)
-            for row in published:
-                pending.pop(c.normalize(row["word"]), None)
-            save_pending(c.PENDING_PATH, pending)
-            print(f"Created/updated: {url}; candidates: {len(published)}; new history: {saved}")
-            c.write_summary([f"## {title}", f"掲載: {len(published)}語 / 履歴への追加: {saved}語", f"確認辞書: {dictionary.release} / 保留: {len(pending)}語", url])
+            c.write_summary([f"## {title}", f"掲載済み: {len(previous)}語。上限に達しているため追加なし。", existing["html_url"]])
             return 0
+        try:
+            accepted = c.collect_candidates(now, excluded, remaining, readings, pending=pending)
+        except Exception:
+            save_pending(c.PENDING_PATH, pending)
+            raise
+        save_pending(c.PENDING_PATH, pending)
+        if not accepted:
+            lines = [f"## {title}", "確認済みの追加候補なし。空のIssueは作成しません。", f"保留: {len(pending)}語 / 辞書照合: 未確認"]
+            if previous:
+                lines += [f"掲載済み: {len(previous)}語。追加候補なし。", existing["html_url"]]
+            c.write_summary(lines)
+            return 0
+        url, published = c.publish_candidates(title, accepted, existing)
+        saved = c.append_seen(published)
+        for row in published:
+            pending.pop(c.normalize(row["word"]), None)
+        save_pending(c.PENDING_PATH, pending)
+        print(f"Created/updated: {url}; candidates: {len(published)}; new history: {saved}")
+        c.write_summary([f"## {title}", f"掲載: {len(published)}語 / 履歴への追加: {saved}語", f"保留: {len(pending)}語 / 辞書照合: 未確認", url])
+        return 0
     except Exception as error:
         print(f"Collection failed: {error}", file=c.sys.stderr, flush=True)
-        c.write_summary([f"## {title}: 失敗", f"理由: {error}", "辞書・根拠を確認できない語は未登録語として公開しません。"])
+        c.write_summary([f"## {title}: 失敗", f"理由: {error}", "根拠・読みを確認できない語は掲載しません。"])
         return 1

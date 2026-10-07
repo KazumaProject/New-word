@@ -21,7 +21,6 @@ spec = importlib.util.spec_from_file_location(
 collector = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(collector)
 NOW = dt.datetime(2026, 10, 2, 20, 15, tzinfo=collector.TZ)
-ID_MAP = {collector.pos_label("製品"): 1920, collector.pos_label("研究所"): 1929, collector.pos_label("名詞", "common"): 1851}
 
 
 def article(word, publisher, age=dt.timedelta(hours=1), link=None, now=NOW):
@@ -57,26 +56,9 @@ def issue(number, rows, extra=""):
     }
 
 
-class FakeIndex:
-    release = "v-test"
-    pos_ids = ID_MAP
-    def __init__(self, github=None, registered=()):
-        self.github = github
-        self.registered = {collector.normalize(word) for word in registered}
-    def contains(self, word):
-        return collector.normalize(word) in (self.github.registered if self.github else self.registered)
-    def verification(self):
-        return {"repository": "KazumaProject/kotlin-kana-kanji-converter", "release": self.release, "manifest_sha256": "a" * 64, "url": "https://github.com/KazumaProject/kotlin-kana-kanji-converter/releases/tag/v-test"}
-    def __enter__(self):
-        return self
-    def __exit__(self, *_):
-        pass
-
-
 class FakeGitHub:
-    def __init__(self, issues=(), registered=()):
+    def __init__(self, issues=()):
         self.issues = copy.deepcopy(list(issues))
-        self.registered = {collector.normalize(word) for word in registered}
         self.calls = []
         self.fail_write = False
 
@@ -116,7 +98,6 @@ class CollectorTests(unittest.TestCase):
             patch.object(collector, "SEEN_PATH", self.seen),
             patch.object(collector, "github_api", side_effect=lambda *args: self.github(*args)),
             patch.object(collector, "PENDING_PATH", Path(directory.name) / "pending.json"),
-            patch.object(collector, "load_dictionary_index", side_effect=lambda: FakeIndex(self.github)),
             patch.object(collector, "verify_usage_sources", side_effect=lambda word, sources, readings: sources),
             patch.object(collector, "require_official_name", return_value=[{"source": "公式", "link": "https://official.example/name"}]),
             patch.object(collector.ReadingResolver, "resolve", side_effect=lambda word, sources: {"reading": collector.kana_reading(word) or "てすとよみ", "reading_status": "confirmed", "reading_method": "source", "reading_sources": sources, "reading_note": ""}),
@@ -172,7 +153,7 @@ class CollectorTests(unittest.TestCase):
                 self.assertEqual(self.run_main(), 0)
                 self.assertTrue(self.published()[0]["supplement"])
                 self.assertIn(f"Search: 補充: {expected_stage}", self.output.getvalue())
-                self.assertIn("過去の未登録語を含む", self.github.issues[0]["body"])
+                self.assertIn("過去の記事も対象", self.github.issues[0]["body"])
 
     def test_recent_window_is_twenty_four_elapsed_hours_across_dst(self):
         now = dt.datetime(2026, 11, 1, 19, tzinfo=collector.TZ)
@@ -242,10 +223,10 @@ class CollectorTests(unittest.TestCase):
         self.assertNotIn("新名称09", collector.load_seen())
         self.assertEqual(sum(path.startswith("/search/code?") for _, path, _ in self.github.calls), 0)
 
-    def test_already_seen_past_issue_and_registered_words_are_excluded(self):
+    def test_already_seen_and_past_issue_words_are_excluded(self):
         collector.append_seen([candidate("掲載済み")])
-        self.github = FakeGitHub([issue(1, [candidate("過去候補", date="2026-10-01")])], registered=["登録済み"])
-        for word in ("掲載済み", "過去候補", "登録済み", "未登録候補"):
+        self.github = FakeGitHub([issue(1, [candidate("過去候補", date="2026-10-01")])])
+        for word in ("掲載済み", "過去候補", "未登録候補"):
             self.rss.extend(evidence(word))
         self.assertEqual(self.run_main(), 0)
         self.assertEqual([row["word"] for row in self.published()], ["未登録候補"])

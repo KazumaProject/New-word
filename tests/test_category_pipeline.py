@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 import test_collect_new_words as legacy
-from test_collect_new_words import collector, FakeIndex, candidate, evidence, article, issue, NOW
+from test_collect_new_words import collector, candidate, evidence, article, issue, NOW
 
 pipeline = collector.candidate_pipeline
 
@@ -17,13 +17,14 @@ class CategoryPipelineTests(unittest.TestCase):
     run_main = legacy.CollectorTests.run_main
     published = legacy.CollectorTests.published
 
-    def test_dictionary_failure_prevents_every_issue_write_and_history_change(self):
+    def test_collection_only_uses_this_project_and_marks_dictionary_unchecked(self):
         self.rss = evidence("新語テスト")
-        before = self.seen.read_bytes()
-        with patch.object(collector, "load_dictionary_index", side_effect=RuntimeError("incomplete export")):
-            self.assertEqual(self.run_main(), 1)
-        self.assertEqual(self.github.calls, [])
-        self.assertEqual(self.seen.read_bytes(), before)
+        self.assertEqual(self.run_main(), 0)
+        self.assertTrue(all(path.startswith(f"/repos/{collector.REPO}/issues") for _, path, _ in self.github.calls))
+        row = self.published()[0]
+        self.assertEqual(row["dictionary_check"], {"status": "not_checked"})
+        self.assertEqual(row["id"], "")
+        self.assertNotIn("dictionary", row)
     def test_uncertain_readings_are_pending_and_not_seen(self):
         self.rss = evidence("UnknownTerm")
         with patch.object(collector.ReadingResolver, "resolve", return_value={"reading": "要確認", "reading_status": "unconfirmed", "reading_estimate": "あんのうんたーむ", "reading_note": "推定"}):
@@ -36,7 +37,7 @@ class CategoryPipelineTests(unittest.TestCase):
         self.rss = evidence("あたらしい")
         self.assertEqual(self.run_main(), 0)
         self.assertFalse(self.github.issues)
-    def test_category_overlap_groups_once_and_exports_category_and_release(self):
+    def test_category_overlap_groups_once_and_exports_unchecked_status(self):
         self.rss = evidence("クラウド語彙")
         self.assertEqual(self.run_main(), 0)
         rows = self.published()
@@ -45,21 +46,21 @@ class CategoryPipelineTests(unittest.TestCase):
         self.assertEqual(len(rows[0]["categories"]), 9)
         body = self.github.issues[0]["body"]
         self.assertIn("## 生活・食", body)
-        self.assertIn("分類\t辞書リリース", body)
-        self.assertIn("辞書manifestSHA256", body)
-        self.assertIn('"version": 2', body)
+        self.assertIn("分類\t辞書照合", body)
+        self.assertIn("辞書照合は未確認", body)
+        self.assertIn('"version": 3', body)
     def test_round_robin_uses_multiple_categories_before_second_word(self):
         categories = [{"id": "one"}, {"id": "two"}, {"id": "three"}]
         rows = [{"category": "one", "word": str(i)} for i in range(10)] + [{"category": "two", "word": "B"}, {"category": "three", "word": "C"}]
         self.assertEqual([row["word"] for row in pipeline.round_robin(rows, categories, 4)], ["0", "B", "C", "1"])
-    def test_reading_refresh_retains_verified_tsv_columns(self):
-        row = {**candidate("読み修正の語彙"), "categories": ["technology"], "category": "technology", "dictionary": FakeIndex().verification()}
+    def test_reading_refresh_retains_collection_tsv_columns(self):
+        row = {**candidate("読み修正の語彙"), "categories": ["technology"], "category": "technology", "dictionary_check": {"status": "not_checked"}, "id": ""}
         current = issue(1, [row], extra="\n手動メモ: 語義を確認済み")
         body = collector.replace_issue_readings(current, {row["normalized"]: {"reading": "よみしゅうせいのごい", "reading_status": "confirmed", "reading_method": "source"}})
         tsv = body.split("```tsv\n", 1)[1].split("```", 1)[0]
         entry = next(csv.DictReader(io.StringIO(tsv), delimiter="\t"))
-        self.assertEqual(entry["辞書manifestSHA256"], "a" * 64)
-        self.assertEqual(entry["辞書リポジトリ"], FakeIndex().verification()["repository"])
+        self.assertEqual(entry["辞書照合"], "未確認")
+        self.assertEqual(entry["左ID"], "")
         self.assertEqual(entry["分類"], "technology")
         self.assertIn("手動メモ: 語義を確認済み", body)
     def test_pending_is_retried_without_new_feed_articles(self):

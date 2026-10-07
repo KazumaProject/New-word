@@ -1,20 +1,26 @@
 # New-word
 
-日本語IMEで使う名詞・固有名詞をカテゴリ別に収集し、converterの全辞書パックに表記が存在しない語だけを1日1件のIssueに掲載します。新語と以前から使われている未登録語を対象にし、有料AI APIは使用しません。
+日本語IMEで使う名詞・固有名詞をカテゴリ別に収集し、1日1件のIssueに最大10語のレビュー候補を掲載します。新しい言葉だけでなく、以前から使われている名称や専門用語も対象にします。有料AI APIは使用しません。
+
+このプロジェクトでは語の収集・読み・使用例の確認を行います。辞書との接続・収録確認は後で別途行うため、全候補の辞書照合は **未確認**、品詞IDは空欄です。掲載した語が辞書に未収録であるとは判定しません。
+
+## 最初の候補リスト
+
+[2026-10-07のカテゴリ別リスト](lists/2026-10-07.md) に、日本語使用例を出典で確認した10語を保存しています。[公開済みIssue #6](https://github.com/KazumaProject/New-word/issues/6) からも確認できます。同じ内容の機械可読データは [data/lists/2026-10-07.json](data/lists/2026-10-07.json) です。
 
 ## 掲載条件
 
-- 表記をNFKC・空白・英字大小で正規化し、別の読みで存在する表記も除外します。
 - 独立した日本語使用例を2件以上、記事本文で確認します。通信社や同一記事の転載は1件として扱います。
-- かな表記、ルビ、明示的な読み、または根拠付きの確認済み資料から完全な読みを確認します。推定読みや読みの競合は掲載しません。
+- かな表記、ルビ、明示的な読み、または根拠付きの確認済み資料から完全な読みを確認します。推定読みや読みの競合は保留にします。
 - 製品・サービス・作品・人名・組織・地名などの名称は公式根拠も確認します。
 - 文章、宣伝文句、不完全な名称、数字だけの文字列、入力と同じひらがな表記は除外します。動詞・形容詞の活用展開は対象外です。
+- 掲載済み語をNFKC・空白・英字大小で正規化して、過去のIssueと履歴から重複を除きます。
 
-一般名詞と固有名詞は別のMozc品詞に割り当てます。品詞IDは索引と同じビルドのPOS定義を使用します。最新Mozcの別途取得やGitHubコード検索は行いません。
+一般名詞、人名、組織、地名、その他の固有名詞に適切なMozc品詞ラベルを付けます。話題のカテゴリと品詞は別の項目です。
 
 ## カテゴリと毎日の動作
 
-`data/categories.json` に各分類の検索語と品詞種別を設定しています。
+`data/categories.json` に各分類の日本語検索語と名称種別を設定しています。
 
 | 分類 | 対象 |
 |---|---|
@@ -28,37 +34,20 @@
 | 地名・施設 | 地名、駅、施設 |
 | ネット語・俗語 | ネット語、若者言葉、俗語 |
 
-Google News RSSを分類ごとに検索し、24時間、30日、365日、期間制限なしの順に探索を広げます。全分類タグを保持し、設定順の最初の分類に一度だけ表示します。分類ごとに順番に選び、合計最大10語を掲載します。候補が0件ならIssueを作らず正常終了します。
+Google News RSSを分類ごとに検索し、24時間、30日、365日、期間制限なしの順に探索を広げます。検索で一致した全分類タグを保持し、設定順の最初の分類に一度だけ表示します。分類ごとに順番に選び、合計最大10語を掲載します。候補が0件ならIssueを作らず正常終了します。
 
-Issue名は `新語候補 YYYY-MM-DD`。Toronto時間の19時に実行予定です。日付と夏時間の扱いは従来通りです。Actionsの混雑により開始が遅れる場合があります。
+Issue名は `新語候補 YYYY-MM-DD`。従来の無料ActionsとToronto時間19時のスケジュールを維持します。Actionsの混雑により開始が遅れる場合があります。
 
-## 辞書の検証と初回有効化
+## 実行
 
-先にconverter側の索引生成変更を反映し、次の4ファイルを同じversionリリースに公開してください。
-
-- `japanese_keyboard_dictionary_assets.zip`
-- `dictionary-index.tsv.gz`
-- `dictionary-index-manifest.json`
-- `dictionary-index-NOTICES.md`
-
-最新の公開済み `v*` リリースを一度だけ選び、全13パックの収録、索引の件数とSHA-256、辞書ZIPのSHA-256、同梱POS定義との一致を検証してSQLiteに読み込みます。metadata専用リリースは選びません。新しいversionリリースに索引がない場合、古い辞書へ戻って未登録判定することはありません。
-
-1. converterで索引付きversionリリースを公開する。
-2. Actions → Daily new words → Run workflowで `check_dictionary_only` を有効にして検証する。Issueや履歴は変更しません。必要なら `dictionary_release` にタグを指定します。
-3. 成功を確認し、このリポジトリのActions variable `IME_COLLECTION_ENABLED` を `true` に設定する。
-4. 通常の手動収集と、次回の定時実行を確認する。
-
-このvariableを設定するまでは定時収集は有効になりません。標準 `GITHUB_TOKEN` だけで公開辞書の読み取りとIssue・履歴の保存を行います。`CODE_SEARCH_TOKEN` は不要です。
+Actions → Daily new words → Run workflowで手動実行できます。標準の `GITHUB_TOKEN` でこのリポジトリのIssueと履歴を保存します。辞書のエクスポート、別リポジトリへのアクセス、コード検索用トークンは必要ありません。
 
 ローカルでは `GH_TOKEN` を環境変数に設定して実行します。
 
 ```sh
 python3 -m pip install -r requirements.txt
-python3 scripts/collect_new_words.py --check-dictionary
 python3 scripts/collect_new_words.py
 ```
-
-検証用forkだけを試す場合は `DICTIONARY_REPOSITORY=owner/repository` と `DICTIONARY_RELEASE=tag` を指定できます。既定は `KazumaProject/kotlin-kana-kanji-converter` です。
 
 ## 保留と再実行
 
@@ -66,11 +55,11 @@ python3 scripts/collect_new_words.py
 
 候補はIssueへの掲載成功後だけ履歴に記録します。応答が失われた場合も公開済みIssueから履歴を回復し、同日の合計10語を守ります。未掲載候補は保留に残し、収集失敗時も保存済みの保留と公開履歴はActionsがコミットします。
 
-新しいメタデータはversion 2。従来のversion 1と5列TSVも読みます。既存本文・手書きメモを保持し、追加候補を分類付きで追記します。TSVには分類、確認辞書のリリース・リポジトリ・manifestのSHA-256を追加します。このTSVはレビュー候補で、辞書への自動登録や変換コストの調整は行いません。
+新しいメタデータはversion 3で、分類と `dictionary_check.status=not_checked` を記録します。従来のversion 1・2と5列TSVも読みます。既存本文・手書きメモを保持し、追加候補を分類付きで追記します。新しいTSVには分類と辞書照合の状態を追加し、左右の品詞IDは空欄にします。辞書への登録と変換コストの調整は別の作業です。
 
 既存Issueの読みだけを更新する場合は手動workflowの `refresh_readings`、または `python3 scripts/collect_new_words.py --refresh-readings` を使用します。
 
-`data/readings.json` に根拠付きの確認済み読みを登録できます。同名の別作品・製品に誤適用しないよう `context` を指定してください。公式であることを確認したURLを `official_name_sources` に `sources` と同じ形式で追加できます。これも本文の名称確認と取得上限の対象です。
+`data/readings.json` に根拠付きの確認済み読みを登録できます。同名の別作品・製品に誤適用しないよう `context` を指定してください。公式であることを確認したURLを `official_name_sources` に `sources` と同じ形式で追加できます。自動収集ではこれも本文の名称確認と取得上限の対象です。
 
 ## テスト
 
@@ -85,4 +74,4 @@ python -m pip install tzdata
 python -X utf8 -B -m unittest discover -s tests -v
 ```
 
-テストは外部通信や実際のIssue作成を行わず、全パック照合、別読み・正規化、破損索引、品詞ID不一致、分類重複、転載、保留再確認、掲載失敗と旧形式互換性を検証します。
+テストは外部通信や実際のIssue作成を行わず、未確認の辞書状態、正規化した掲載済み語の重複、読みの競合と推定、無効なフレーズ、分類の重複、転載、保留再確認、掲載失敗・再実行、旧形式の互換性を検証します。
