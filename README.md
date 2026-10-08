@@ -1,89 +1,102 @@
 # New-word
 
-日本語IME向けの新語候補を、無料のGitHub Actionsだけで毎日収集するリポジトリです。
+日本語IMEで使う名詞・固有名詞を収集するプロジェクトです。既存のIssue用Actionsに加え、カテゴリ別の収集データを累積ZIPで配布するRelease専用Actionsがあります。有料AI APIは使用しません。
 
-## 動作
+## 2つのActions
 
-- Toronto時間（America/Toronto）の毎日19時に実行予定。夏時間にも自動対応
-- Google News RSSから新サービス・新製品・新技術などの候補を収集
-- 通常は直近24時間を検索。候補が0件なら30日、365日、期間制限なしの順に探索を広げ、AI・医療・宇宙・ゲーム・ブランド分野も追加
-- 補充には以前から使われている未登録語も含め、Issueの備考に補充候補と表示
-- 名称としての文脈（新製品・新サービスの名前、発売・提供する対象など）があり、2媒体以上で確認できた候補のみ採用
-- 引用された文章・宣伝文句・説明文や、発表元企業の英字名だけを拾った候補を除外
-- 記事本文のルビや「表記（読み）」を取得し、確認できた読みをひらがなに正規化
-- 毎回、既存Issueの未確定の読みも最大10語再確認。確認済みの読みと根拠を表・TSV・履歴に反映
-- 媒体数、記事の新しさ、表記の順で選び、1日分のIssueに最大10語を掲載
-- 過去Issueと data/seen.tsv を使って重複排除
-- KazumaProject/JapaneseKeyboard をGitHubコード検索して既存語を追加チェック
-- 最新のMozc src/data/dictionary_oss/id.def を毎回取得
-- Mozc互換の品詞文字列からIDを逆引き
-- Torontoの日付で 新語候補 YYYY-MM-DD Issueを作成。同日の再実行は既存本文を保持して追記し、合計10語まで
-- 掲載成功後にのみ data/seen.tsv を更新。未掲載の候補は掲載済みとして記録しない
-- 全探索後も候補が0件なら空のIssueは作成せず、Actionsを失敗扱いにする
-- OpenAI APIなどの有料AI APIは使用しません
+| Actions | 用途 | 保存・配布先 |
+|---|---|---|
+| Daily new words | 従来のIssue収集・読み更新 | 日次Issue、`data/seen.tsv` |
+| Daily word release | 読み・日本語使用例を確認した候補をカテゴリ別に蓄積 | `data/release/`、同じReleaseの`new-words.zip` |
 
-## 手動実行
+両方ともToronto時間19時に実行し、手動実行にも対応します。Gitへの書き込みは同じ実行制御グループで直列化します。公開リポジトリの標準Ubuntu runnerで動作します。[GitHub Actionsの料金仕様](https://docs.github.com/en/billing/concepts/product-billing/github-actions)
 
-Actions → Daily new words → Run workflow
+Issue側の投稿・スケジュール・既存のコード検索は従来のmainの動作を維持します。Issue #6のメタデータv3を履歴として読み込める互換対応だけ追加しています。従来のコード検索はバイナリ辞書の収録確認にはなりません。Release側はIssue履歴・コード検索・辞書リポジトリから独立しています。
 
-既存Issueの読みだけを更新する場合は、`refresh_readings` を有効にして実行してください。新しい語の収集やIssue作成は行いません。
+## Releaseの取得とファイル形式
 
-手動実行は任意の時刻に利用できます。定時実行も開始時刻による除外は行わず、遅れて開始した場合も収集します。
-同日のIssueがすでに10語に達している場合は追加しません。掲載済みの語がある日の再実行で追加候補が0件なら、既存Issueを保持して成功とします。
+[累積Release](https://github.com/KazumaProject/New-word/releases/tag/new-words)の **new-words.zip** を取得してください。初回公開後に利用できます。同じReleaseタグ`new-words`と同じZIP名を更新します。日付別Releaseは作りません。
 
-## コード検索の認証
+ZIPを展開すると次のファイルが入っています。
 
-Actionsの標準トークンではコード検索に長い待機制限が出る場合があります。
-制限が出るまでに確認できた候補がある場合は、その候補だけを掲載します。未確認の語は掲載済みとして記録せず、翌日以降も対象に残します。その日のIssueに掲載済みの語があれば既存Issueを保持して成功とし、その日分の確認済み候補が0件なら失敗扱いにします。
-より多くの候補を照合する場合は、任意で公開リポジトリを読み取るためのPersonal Access Tokenを、リポジトリのActions secret `CODE_SEARCH_TOKEN` に登録できます。
-Fine-grained tokenのRepository accessは `Public repositories (read-only)` を選び、追加の書き込み権限は不要です。
+| ファイル | 内容 |
+|---|---|
+| `dictionary-0001.tsv` | 読み・表記・品詞ラベルの3列。UTF-8、BOM・ヘッダーなし、タブ区切り、改行LF |
+| `metadata-0001.jsonl` | TSVと同じ順番の語。分類、使用例、読みの根拠、確認日、手動メモ、辞書照合状況 |
+| `manifest.json` | 形式バージョン、データのGitコミット、更新日時、列・カテゴリ定義、件数、各ファイルのサイズとSHA-256 |
 
-`CODE_SEARCH_TOKEN` はコード検索だけに使用します。Issue作成と履歴コミットには、このリポジトリ用の標準 `GITHUB_TOKEN` を使用します。
-未設定なら標準トークンを使用します。コード検索の待機指定が60秒を超える場合は再アクセスせず、待機理由と確認済みの件数を記録して、その回の照合を終了します。
+TSVにはURL、日付、カテゴリ、メモを混ぜません。品詞はMozcのラベル文字列です。数値の品詞ID・変換コストは後の辞書連携で設定します。
 
-## 実行結果と検証
+**辞書照合は未確認（`not_checked`）です。** 収集した語が辞書に未収録、または変換できないという判定は行いません。辞書接続・収録確認・辞書登録・変換コスト調整は別工程です。
 
-Actionsの実行サマリーにIssueへのリンク、掲載件数、または失敗理由を表示します。
-`Collect new words` のログには探索段階ごとの記事数・候補数・除外理由を記録します。
+独自に添付するAssetはZIP 1個です。GitHubが自動表示するSource codeのZIP・tar.gzは辞書用配布ファイルではありません。
 
-通信エラーは読み取りリクエストを最大3回試行します。コード検索は再試行も含め毎分10リクエスト未満に制限し、`Retry-After` とレート制限の解除時刻を尊重します。
-検索エラーや不完全な検索結果を「未登録」として扱うことはありません。実行上限は30分です。
+## 初期データと採用条件
 
-外部通信や実際のIssue作成なしにテストできます。漢字の読み推定を含めて検証するには、無料のローカル変換ライブラリをインストールしてください。Actionsも同じ依存関係を使用します。
+初期データは[2026-10-07の確認済み10語](lists/2026-10-07.md)です。[元のメタデータ](data/lists/2026-10-07.json)と[Issue #6](https://github.com/KazumaProject/New-word/issues/6)も参照できます。その他の過去IssueはReleaseへ取り込みません。
+
+- 独立した日本語使用例を2件以上、本文で確認します。同一記事や通信社の転載は1件として扱います。
+- かな表記、ルビ、明示的な読み、根拠付きの確認済み資料から完全な読みを確認します。推定読み・読みの矛盾は保留します。
+- 製品・サービス・作品・人名・組織・地名などには公式名称の根拠も必要です。
+- 文章、宣伝文句、不完全な名称、数字だけの文字列、入力と同じひらがな表記は除外します。
+- 表記をNFKC・空白・英字大小で正規化し、Release内で重複を除きます。別の読みで同じ表記を重複登録しません。
+
+## カテゴリと日次上限
+
+検索語とカテゴリ順は[data/categories.json](data/categories.json)で設定します。
+
+| 分類 | 対象 |
+|---|---|
+| 生活・食 | 日常語、料理、食品 |
+| IT・AI | ソフトウェア、IT、AI |
+| 科学・医療 | 科学、研究、医療 |
+| 社会・ビジネス | 経済、制度、ビジネス |
+| ゲーム・アニメ・音楽 | 作品、ゲーム、音楽 |
+| 製品・サービス・ブランド | 製品、サービス、ブランド |
+| 人名・組織 | 人物、企業、団体 |
+| 地名・施設 | 地名、駅、施設 |
+| ネット語・俗語 | ネット語、若者言葉、俗語 |
+
+Google News RSSを分類ごとに検索し、24時間、30日、365日、期間制限なしの順に探索を広げます。新語だけでなく、以前から使われている名称・専門用語も対象です。全分類タグを保持し、設定順の最初の分類を主分類にします。分類を順番に巡回して、合計最大10語を採用します。
+
+採用上限はTorontoの日付ごとに10語です。保留語の再確認も1日最大10語。日付付きの採用履歴・再確認履歴をGitへ保存し、同日の再実行でも上限を守ります。本文取得は1実行20ページ以内で、半分を保留再確認のために先に確保します。記事キャッシュを使用例・読み・公式根拠の確認で共有します。
+
+## 保存・サイズ・復旧
+
+確定データは`data/release/entries-*.jsonl`、保留候補と当日の再確認履歴は`data/release/pending.json`に保存します。手動メモは`manual_notes`に記入できます。自動収集では既存の確定語を上書きせず、保留語が採用された際もメモを保持します。根拠付きの読みは`data/readings.json`で管理します。
+
+データを検証し、Gitへcommit・pushしてからZIPを配布します。push失敗時には配布しません。収集失敗時も保留根拠・再確認履歴の保存を試みますが、ZIPは公開しません。確定データが変わらない日は、同じZIPの置換を省略します。
+
+ファイルは非圧縮32MiBを上限に、語の行単位で分割します。TSVとメタデータの対応を保ち、`0002`以降をmanifestに列挙します。初期10語のサイズからの概算では、毎日10語追加して年間TSV約0.3MB・メタデータ約3.4MB（非圧縮）なので、当面は各1ファイルです。32MiBはGitの50MiB警告・100MiB上限に余裕を取った設計値です。[Gitのファイル制限](https://docs.github.com/en/repositories/working-with-files/managing-large-files/about-large-files-on-github)
+
+分割後も配布ZIP・Releaseは1つです。ZIPは2GiB未満を検証します。[Releaseの制限](https://docs.github.com/en/repositories/releasing-projects-on-github/about-releases)
+
+Asset置換は旧ファイルを先に削除するため、アップロード失敗時にZIPが一時的に取得できなくなる場合があります。Gitの累積データは残るので、次回実行または手動`rebuild`で復旧できます。[GitHub CLIの置換仕様](https://cli.github.com/manual/gh_release_upload)
+
+## 初回公開と手動実行
+
+PRのマージ後、Actions → **Daily word release** → Run workflow → `mode: rebuild`を選びます。保存済み10語からZIPを作り、ニュース収集せずに配布します。その後は日次実行または`mode: collect`で追加します。`rebuild`は内容が同じでも再アップロードします。
+
+Releaseは更新可能である必要があります。既存Releaseがimmutableの場合は停止し、リポジトリ設定は変更しません。新規作成時にimmutable設定の確認APIへアクセスできない場合も停止します。このAPIには管理者の読み取り権限が必要なため、その場合は管理者が設定を確認し、更新可能な`new-words` Releaseを先に作成してから`rebuild`を実行してください。既存の可変Releaseの更新は標準`GITHUB_TOKEN`の`contents: write`で行います。[immutable Release](https://docs.github.com/en/code-security/concepts/supply-chain-security/immutable-releases)、[設定確認APIの権限](https://docs.github.com/en/rest/repos/repos#check-if-immutable-releases-are-enabled-for-a-repository)
+
+Release公開は本家リポジトリのデフォルトブランチだけで実行します。forkやPRのテストでReleaseを公開することはありません。Actionsの混雑により日次実行が遅れる場合があります。
+
+ローカルで保存済みデータからZIPを生成する場合:
 
 ```sh
-python3 -m pip install -r requirements.txt
-python3 -B -m unittest discover -s tests -v
+python -m pip install -r requirements.txt
+python scripts/collect_release_words.py --mode rebuild
+python scripts/release_archive.py
 ```
 
-変更を `main` に反映した後、手動実行でIssue作成と履歴コミットを確認してください。
-次の定時実行のログで、Toronto時間の予定時刻と夏時間設定も確認できます。
+ZIPはGit管理外の`dist/new-words.zip`に生成します。manifestのコミットは確定データ・カテゴリ・配布形式を最後に変更したコミットで、保留履歴やIssue履歴だけの更新では変化しません。
 
-## 注意
+既存Issueの読みだけを更新する場合は **Daily new words** の`refresh_readings`を使用します。従来のIssue収集のコード検索には引き続き`CODE_SEARCH_TOKEN`が必要です。
 
-GitHub Actionsの定時実行には混雑による遅延や未実行があり、19時ちょうどの開始は保証されません。
-公開リポジトリでは60日間リポジトリに活動がないと定時実行が無効化されるため、その場合はActionsから再度有効にしてください。
-定時実行とタイムゾーンの仕様は[GitHub公式ドキュメント](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#schedule)を参照してください。
-
-JapaneseKeyboard の辞書の一部はバイナリアセットなので、GitHubのコード検索だけでは中身を完全検索できません。コード検索にない語でも、辞書本体に未登録とは断定できません。この確認範囲はIssueにも明記します。
-そのため、この自動化が一度扱った候補は data/seen.tsv と過去Issueの両方で永続的に重複防止します。
-
-## 読みの取得と既存Issueの更新
-
-かなだけの表記は、ひらがなへ正規化します。英字・漢字を含む語は、最大3件の出典の見出し・本文にあるルビ、`表記（読み）`、`表記（読み方：カタカナ）` などの明示を探します。Google Newsのリンクは配信元の記事URLに解決します。
-
-確認済みの読みは `data/readings.json` に根拠URLとともに保存できます。必要に応じて `context` に記事見出しのキーワードを指定し、同じ表記の別製品や作品への誤適用を防ぎます。登録済みの確認結果を優先し、Issueの備考に読みの根拠を表示します。記事による読みと公式指定の読みは備考で区別します。
-
-完全な読みが明記されていない語、出典間で読みが異なる語、出典の取得に失敗した語は `要確認` のまま理由を表示します。読みの明記がない場合は、漢字を含む日本語をpykakasiの辞書で変換し、英大文字2〜6文字の略称を文字読みして、完全な推定読みが得られた場合だけ備考に表示します。文脈が一致する確認済みの名称部品も利用します。推定は固有名詞の指定読みと異なる場合があるため、確認済みの読みと区別します。未知の英単語・数字が残る場合や出典の読みが競合する場合は推定を表示しません。**読み未確定の語は辞書登録用TSVに含めません**。候補の表と内部メタデータには残し、後から読みを確認した時点でTSVへ追加します。
-
-毎日の実行で過去Issueの未確定語を最大10語再確認します。対象は日ごとに巡回し、同じ古いIssueだけで上限を使い切ることを避けます。新規収集と再確認を合わせて記事ページは最大20件まで取得し、共有する記事はキャッシュします。取得は1リクエスト10秒、レスポンス上限2MBです。取得できない出典があっても他の出典の確認を続けます。
-
-読み更新（推定読みの備考追加を含む）は既存本文の表・TSV・内部メタデータだけを変更し、手書きのメモや確認済みの読みを保持します。Issueへの反映後に `data/seen.tsv` の未確定の読みも同期します。履歴の保存に失敗しても、次の実行で公開済みIssueから同期を再開できます。
-
-ローカルで全既存Issueの読みを再確認する場合は、`GH_TOKEN` を設定して実行します。
+## テスト
 
 ```sh
-python3 scripts/collect_new_words.py --refresh-readings
+python -B -m unittest discover -s tests -v
 ```
 
-この手動モードは全未確定語を処理するため、語数が多い場合は毎日の巡回より時間がかかります。読み取得に有料APIや追加のsecretは不要です。
+Windowsでは`tzdata`をインストールし、`python -X utf8 -B`を使用できます。テストは外部通信・実際のIssueやRelease公開を行わず、従来のIssue動作、v1/v3互換、カテゴリ、読み、転載、日次上限、累積データ、分割、整合性、置換失敗からの復旧を検証します。

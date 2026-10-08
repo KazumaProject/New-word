@@ -589,7 +589,9 @@ def issue_rows(issue: dict) -> list[dict]:
     result = {}
     for match in ENTRIES_RE.finditer(body):
         data = json.loads(match.group(1))
-        if data.get("version") != 1 or not isinstance(data.get("rows"), list):
+        # The categorized review list in Issue #6 uses v3. Keep legacy Issue
+        # publication unchanged while accepting its compatible history fields.
+        if data.get("version") not in {1, 3} or not isinstance(data.get("rows"), list):
             raise RuntimeError(f"Issue #{issue['number']} has unsupported candidate metadata")
         for row in data["rows"]:
             if not isinstance(row, dict) or any(not isinstance(row.get(field), str) for field in SEEN_FIELDS):

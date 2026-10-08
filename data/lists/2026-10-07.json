@@ -1,0 +1,400 @@
+{
+  "version": 3,
+  "rows": [
+    {
+      "date": "2026-10-07",
+      "word": "グリークヨーグルト",
+      "reading": "ぐりーくよーぐると",
+      "normalized": "グリークヨーグルト",
+      "pos": "名詞,一般,*,*,*,*,*",
+      "id": "",
+      "kind": "common",
+      "categories": [
+        "life_food"
+      ],
+      "category": "life_food",
+      "sources": [
+        {
+          "source": "milkygreek 公式",
+          "link": "https://info.milkygreek.com/",
+          "title": "グリークヨーグルト専門店 milkygreek"
+        },
+        {
+          "source": "ニイチナナ 公式",
+          "link": "https://217-greekyogurt.jp/",
+          "title": "グリークヨーグルト専門店 ニイチナナ"
+        }
+      ],
+      "supplement": true,
+      "reading_status": "confirmed",
+      "reading_method": "kana",
+      "reading_sources": [],
+      "reading_note": "",
+      "official_name_sources": [],
+      "dictionary_check": {
+        "status": "not_checked"
+      },
+      "usage_status": "confirmed",
+      "collection_method": "reviewed_sources",
+      "checked_at": "2026-10-07"
+    },
+    {
+      "date": "2026-10-07",
+      "word": "バイブコーディング",
+      "reading": "ばいぶこーでぃんぐ",
+      "normalized": "バイブコーディング",
+      "pos": "名詞,一般,*,*,*,*,*",
+      "id": "",
+      "kind": "common",
+      "categories": [
+        "technology"
+      ],
+      "category": "technology",
+      "sources": [
+        {
+          "source": "IBM",
+          "link": "https://www.ibm.com/jp-ja/think/topics/vibe-coding",
+          "title": "バイブコーディングとは"
+        },
+        {
+          "source": "GitHub 公式ブログ",
+          "link": "https://github.blog/jp/2025-04-07-github-copilot-agent-mode-activated/",
+          "title": "GitHub Copilotでバイブコーディング：エージェントモードとMCPサポートで開発がもっと自由に"
+        }
+      ],
+      "supplement": true,
+      "reading_status": "confirmed",
+      "reading_method": "kana",
+      "reading_sources": [],
+      "reading_note": "",
+      "official_name_sources": [],
+      "dictionary_check": {
+        "status": "not_checked"
+      },
+      "usage_status": "confirmed",
+      "collection_method": "reviewed_sources",
+      "checked_at": "2026-10-07"
+    },
+    {
+      "date": "2026-10-07",
+      "word": "アセンブロイド",
+      "reading": "あせんぶろいど",
+      "normalized": "アセンブロイド",
+      "pos": "名詞,一般,*,*,*,*,*",
+      "id": "",
+      "kind": "common",
+      "categories": [
+        "science_health"
+      ],
+      "category": "science_health",
+      "sources": [
+        {
+          "source": "理化学研究所",
+          "link": "https://www.riken.jp/research/labs/bdr/brain-organoid/index.html",
+          "title": "脳オルガノイド研究チーム"
+        },
+        {
+          "source": "名古屋大学",
+          "link": "https://www.nagoya-u.ac.jp/researchinfo/result/2025/11/post-902.html",
+          "title": "視床が大脳皮質神経回路の設計士であることを発見"
+        }
+      ],
+      "supplement": true,
+      "reading_status": "confirmed",
+      "reading_method": "kana",
+      "reading_sources": [],
+      "reading_note": "",
+      "official_name_sources": [],
+      "dictionary_check": {
+        "status": "not_checked"
+      },
+      "usage_status": "confirmed",
+      "collection_method": "reviewed_sources",
+      "checked_at": "2026-10-07"
+    },
+    {
+      "date": "2026-10-07",
+      "word": "スポットワーク",
+      "reading": "すぽっとわーく",
+      "normalized": "スポットワーク",
+      "pos": "名詞,一般,*,*,*,*,*",
+      "id": "",
+      "kind": "common",
+      "categories": [
+        "business"
+      ],
+      "category": "business",
+      "sources": [
+        {
+          "source": "厚生労働省・静岡労働局",
+          "link": "https://jsite.mhlw.go.jp/shizuoka-roudoukyoku/newpage_01529.html",
+          "title": "スポットワークの留意事項について"
+        },
+        {
+          "source": "タイミー",
+          "link": "https://corp.timee.co.jp/news/detail-7135/",
+          "title": "スポットワーク市場クォータリーレポート（2026年5-7月版）"
+        }
+      ],
+      "supplement": true,
+      "reading_status": "confirmed",
+      "reading_method": "kana",
+      "reading_sources": [],
+      "reading_note": "",
+      "official_name_sources": [],
+      "dictionary_check": {
+        "status": "not_checked"
+      },
+      "usage_status": "confirmed",
+      "collection_method": "reviewed_sources",
+      "checked_at": "2026-10-07"
+    },
+    {
+      "date": "2026-10-07",
+      "word": "モキュメンタリー",
+      "reading": "もきゅめんたりー",
+      "normalized": "モキュメンタリー",
+      "pos": "名詞,一般,*,*,*,*,*",
+      "id": "",
+      "kind": "common",
+      "categories": [
+        "entertainment"
+      ],
+      "category": "entertainment",
+      "sources": [
+        {
+          "source": "ソニー・ピクチャーズ",
+          "link": "https://www.sonypictures.jp/he/11505306",
+          "title": "スパイナル・タップⅡ 最後の爆音"
+        },
+        {
+          "source": "ワーナー・ブラザース",
+          "link": "https://wwws.warnerbros.co.jp/kinkimovie/",
+          "title": "近畿地方のある場所について 公式サイト"
+        }
+      ],
+      "supplement": true,
+      "reading_status": "confirmed",
+      "reading_method": "kana",
+      "reading_sources": [],
+      "reading_note": "",
+      "official_name_sources": [],
+      "dictionary_check": {
+        "status": "not_checked"
+      },
+      "usage_status": "confirmed",
+      "collection_method": "reviewed_sources",
+      "checked_at": "2026-10-07"
+    },
+    {
+      "date": "2026-10-07",
+      "word": "モフリン",
+      "reading": "もふりん",
+      "normalized": "モフリン",
+      "pos": "名詞,固有名詞,一般,*,*,*,*",
+      "id": "",
+      "kind": "product",
+      "categories": [
+        "products"
+      ],
+      "category": "products",
+      "sources": [
+        {
+          "source": "CASIO 公式",
+          "link": "https://www.casio.com/jp/moflin/",
+          "title": "Moflin（モフリン）"
+        },
+        {
+          "source": "ビックカメラ BIC WAVE",
+          "link": "https://www.biccamera.com/bc/c/media/article/2026/09/202609-ichioshi-moflin-sakura.html",
+          "title": "Moflin（モフリン）に新色さくら色登場！わが家にお迎えしてみた"
+        }
+      ],
+      "supplement": true,
+      "reading_status": "confirmed",
+      "reading_method": "kana",
+      "reading_sources": [],
+      "reading_note": "",
+      "official_name_sources": [
+        {
+          "source": "CASIO 公式",
+          "link": "https://www.casio.com/jp/moflin/",
+          "title": "Moflin（モフリン）"
+        }
+      ],
+      "dictionary_check": {
+        "status": "not_checked"
+      },
+      "usage_status": "confirmed",
+      "collection_method": "reviewed_sources",
+      "checked_at": "2026-10-07"
+    },
+    {
+      "date": "2026-10-07",
+      "word": "チームみらい",
+      "reading": "ちーむみらい",
+      "normalized": "チームみらい",
+      "pos": "名詞,固有名詞,組織,*,*,*,*",
+      "id": "",
+      "kind": "organization",
+      "categories": [
+        "people_organizations"
+      ],
+      "category": "people_organizations",
+      "sources": [
+        {
+          "source": "チームみらい 公式党規約",
+          "link": "https://team-mir.ai/policies/rules",
+          "title": "チームみらい党規約 第1条（名称）"
+        },
+        {
+          "source": "参議院",
+          "link": "https://www.sangiin.go.jp/japanese/joho1/kousei/giin/219/giinmei.htm",
+          "title": "会派別所属議員名一覧（チームみらい・無所属の会）"
+        }
+      ],
+      "supplement": true,
+      "reading_status": "confirmed",
+      "reading_method": "kana",
+      "reading_sources": [],
+      "reading_note": "",
+      "official_name_sources": [
+        {
+          "source": "チームみらい 公式党規約",
+          "link": "https://team-mir.ai/policies/rules",
+          "title": "チームみらい党規約 第1条（名称）"
+        }
+      ],
+      "dictionary_check": {
+        "status": "not_checked"
+      },
+      "usage_status": "confirmed",
+      "collection_method": "reviewed_sources",
+      "checked_at": "2026-10-07"
+    },
+    {
+      "date": "2026-10-07",
+      "word": "ワン・フクオカ・ビルディング",
+      "reading": "わんふくおかびるでぃんぐ",
+      "normalized": "ワン・フクオカ・ビルディング",
+      "pos": "名詞,固有名詞,地域,一般,*,*,*",
+      "id": "",
+      "kind": "place",
+      "categories": [
+        "places"
+      ],
+      "category": "places",
+      "sources": [
+        {
+          "source": "西日本鉄道 公式",
+          "link": "https://www.nishitetsu.co.jp/ja/group/group/residential.html",
+          "title": "不動産事業：ワン・フクオカ・ビルディング"
+        },
+        {
+          "source": "三幸エステート",
+          "link": "https://www.sanko-e.co.jp/read/onefukuoka-building.pdf",
+          "title": "ONE FUKUOKA BLDG.（ワン・フクオカ・ビルディング）"
+        }
+      ],
+      "supplement": true,
+      "reading_status": "confirmed",
+      "reading_method": "kana",
+      "reading_sources": [],
+      "reading_note": "",
+      "official_name_sources": [
+        {
+          "source": "西日本鉄道 公式",
+          "link": "https://www.nishitetsu.co.jp/ja/group/group/residential.html",
+          "title": "不動産事業：ワン・フクオカ・ビルディング"
+        }
+      ],
+      "dictionary_check": {
+        "status": "not_checked"
+      },
+      "usage_status": "confirmed",
+      "collection_method": "reviewed_sources",
+      "checked_at": "2026-10-07"
+    },
+    {
+      "date": "2026-10-07",
+      "word": "ぬい活",
+      "reading": "ぬいかつ",
+      "normalized": "ぬい活",
+      "pos": "名詞,一般,*,*,*,*,*",
+      "id": "",
+      "kind": "common",
+      "categories": [
+        "slang"
+      ],
+      "category": "slang",
+      "sources": [
+        {
+          "source": "SHIBUYA109 lab.",
+          "link": "https://www.shibuya109.co.jp/shibuya109lab/reports/250225/",
+          "title": "Z世代のぬいぐるみに関する意識調査"
+        },
+        {
+          "source": "ITmedia PC USER（鈴木朋子）",
+          "link": "https://www.itmedia.co.jp/pcuser/articles/2512/02/news065.html",
+          "title": "なぜぬい活が流行？ 爆売れラブブと自撮り代わりの若者心理"
+        }
+      ],
+      "supplement": true,
+      "reading_status": "confirmed",
+      "reading_method": "source",
+      "reading_sources": [
+        {
+          "source": "ITmedia PC USER（鈴木朋子）",
+          "link": "https://www.itmedia.co.jp/pcuser/articles/2512/02/news065.html",
+          "title": "なぜぬい活が流行？ 爆売れラブブと自撮り代わりの若者心理"
+        }
+      ],
+      "reading_note": "",
+      "official_name_sources": [],
+      "dictionary_check": {
+        "status": "not_checked"
+      },
+      "usage_status": "confirmed",
+      "collection_method": "reviewed_sources",
+      "checked_at": "2026-10-07"
+    },
+    {
+      "date": "2026-10-07",
+      "word": "コンテキストエンジニアリング",
+      "reading": "こんてきすとえんじにありんぐ",
+      "normalized": "コンテキストエンジニアリング",
+      "pos": "名詞,一般,*,*,*,*,*",
+      "id": "",
+      "kind": "common",
+      "categories": [
+        "technology"
+      ],
+      "category": "technology",
+      "sources": [
+        {
+          "source": "AWS 公式ドキュメント",
+          "link": "https://docs.aws.amazon.com/ja_jp/prescriptive-guidance/latest/writing-best-practices-rag/introduction.html",
+          "title": "RAGのベストプラクティス：はじめに"
+        },
+        {
+          "source": "NTT DATA",
+          "link": "https://www.nttdata.com/jp/ja/trends/data-insight/2026/0625/",
+          "title": "AIエージェントを使える戦力に変えるハーネスエンジニアリング"
+        }
+      ],
+      "supplement": true,
+      "reading_status": "confirmed",
+      "reading_method": "kana",
+      "reading_sources": [],
+      "reading_note": "",
+      "official_name_sources": [],
+      "dictionary_check": {
+        "status": "not_checked"
+      },
+      "usage_status": "confirmed",
+      "collection_method": "reviewed_sources",
+      "checked_at": "2026-10-07"
+    }
+  ],
+  "published_issue": "https://github.com/KazumaProject/New-word/issues/6"
+}
