@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "repository": "KazumaProject/kotlin-kana-kanji-converter",
+  "release": "v1.7.256",
+  "asset": "japanese_keyboard_dictionary_assets.zip",
+  "bytes": 28433340,
+  "sha256": "671b29f510ae9325803fbf0e6ed0d8e9d7a6b783e2b892aab0bc713e2abda8a1",
+  "outputs_sha256": "d66e69ee3c0373697345f3faaba20ba8f091c3ac032a4140d5853c59c59c04fa",
+  "packs": {
+    "emoji": 7753,
+    "emoticon": 983,
+    "english_reading": 829,
+    "kotowaza": 527,
+    "neologd": 404817,
+    "person_name": 70405,
+    "places": 170145,
+    "reading_correction": 751,
+    "single_kanji": 23772,
+    "symbol": 6167,
+    "system": 1291772,
+    "web": 308185,
+    "wiki": 150132
+  }
+}

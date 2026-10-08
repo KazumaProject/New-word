@@ -97,7 +97,8 @@ def asset_matches(asset, path, client):
 def notes(manifest, archive_sha):
     return "\n".join([
         "確認済みの日本語使用例・読みを持つIME候補の累積データです。",
-        "辞書収録状況は未確認です。辞書登録、品詞ID、変換コストの設定は別工程です。", "",
+        "v1.7.256の全13パックに同じ表記の登録がない語を配布します。辞書登録、品詞ID、変換コストの設定は別工程です。", "",
+        "カタカナ化や複数語を組み合わせたIME変換の可否は、この照合の対象に含みません。", "",
         f"- 語数: {manifest['word_count']}", f"- 更新日時: {manifest['updated_at']}",
         f"- 元データ: [{manifest['source_commit'][:12]}](https://github.com/{REPOSITORY}/commit/{manifest['source_commit']})",
         f"- ZIP SHA-256: `{archive_sha}`", "",
@@ -136,7 +137,7 @@ def publish(path, *, client=None, force=False):
     if release.get("immutable") is not False:
         raise RuntimeError("Releaseがimmutableになりました。次回更新できないため設定を確認してください。")
     url = release.get("html_url", f"https://github.com/{REPOSITORY}/releases/tag/{TAG}")
-    summary(["## 新語候補Release", f"累積: {manifest['word_count']}語 / 辞書照合: 未確認",
+    summary(["## 新語候補Release", f"累積: {manifest['word_count']}語 / 辞書照合: v1.7.256・全13パック確認済み",
              "内容変更なし。ZIP置換を省略しました。" if unchanged and not force else "ZIPを検証して配布しました。", url])
     return url
 
@@ -145,7 +146,8 @@ def ensure_pushed(client):
     # Guard local CLI use as well as the workflow's push-before-publish ordering.
     tracked = ["data/release", "data/categories.json", "data/readings.json", "scripts/release_archive.py",
                "scripts/release_candidates.py", "scripts/candidate_pipeline.py", "scripts/collect_release_words.py",
-               "scripts/publish_word_release.py"]
+               "scripts/publish_word_release.py", "data/dictionary-release.json",
+               "scripts/dictionary_assets.py", "scripts/DecodeDictionary.java"]
     status = subprocess.check_output(["git", "status", "--porcelain", "--", *tracked], cwd=data.ROOT, text=True)
     if status.strip():
         raise RuntimeError("Release用データ・コードをGitへ保存してpushしてから配布してください。")
@@ -172,8 +174,9 @@ def main():
             print("Mutable Release preflight passed")
         else:
             commit = ensure_pushed(client)
-            if data.validate_archive(args.archive)["source_commit"] != commit:
-                raise ValueError("ZIP is not built from the saved data revision")
+            with data.dictionaries.DictionaryIndex.from_environment() as dictionary:
+                if data.validate_archive(args.archive, dictionary=dictionary)["source_commit"] != commit:
+                    raise ValueError("ZIP is not built from the saved data revision")
             publish(args.archive, client=client, force=args.force)
         return 0
     except Exception as error:

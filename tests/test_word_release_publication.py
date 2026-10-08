@@ -117,7 +117,7 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(self.client.uploads, 2)
         self.assertEqual(len(self.client.release["assets"]), 1)
         self.assertEqual(sum(method == "POST" for method, _, _ in self.client.calls), 1)
-        self.assertEqual(data.validate_archive(self.output)["word_count"], 11)
+        self.assertEqual(data.validate_archive(self.output)["word_count"], 5)
 
     def test_upload_failure_recovers_from_git_without_a_second_release(self):
         self.publish()

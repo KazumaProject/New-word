@@ -232,7 +232,7 @@ def round_robin(rows: list[dict], categories: list[dict], limit: int) -> list[di
     return result
 
 
-def collect(now, excluded, limit, readings, pending, categories, c, *, retry_state):
+def collect(now, excluded, limit, readings, pending, categories, c, *, retry_state, dictionary):
     order = [category["id"] for category in categories]
     evidence, ready, attempted = {}, {}, set()
     previous_pending = list(sorted(pending))
@@ -240,10 +240,15 @@ def collect(now, excluded, limit, readings, pending, categories, c, *, retry_sta
     for key in list(pending):
         if key in excluded:
             del pending[key]
+        elif dictionary.contains(pending[key]["word"]):
+            pending[key]["dictionary_check"] = dictionary.check(pending[key]["word"], now.date().isoformat())
+            pending[key]["pending_reason"] = "既存辞書に収録済み"
 
     def resolve(key, entry):
         word = entry["word"]
         if key in excluded:
+            return
+        if dictionary.contains(word):
             return
         tags = [category for category in order if category in entry["categories"]]
         if not tags:
@@ -252,7 +257,7 @@ def collect(now, excluded, limit, readings, pending, categories, c, *, retry_sta
         kinds = set(entry.get("kinds", [entry.get("kind", "common")])) - {"common"}
         kind = next(iter(kinds)) if len(kinds) == 1 else "proper" if kinds else "common"
         row = {**pending.get(key, {}), **entry, "date": now.date().isoformat(), "normalized": key, "categories": tags, "category": tags[0], "kind": kind,
-               "last_attempt": now.date().isoformat(), "dictionary_check": {"status": "not_checked"}}
+               "last_attempt": now.date().isoformat(), "dictionary_check": dictionary.check(word, now.date().isoformat())}
         row.pop("dictionary", None)
         if key in previous_pending and key not in allowed_retries:
             # News can supply new evidence without bypassing the persistent
@@ -295,7 +300,8 @@ def collect(now, excluded, limit, readings, pending, categories, c, *, retry_sta
 
     # Reserve half of the shared page budget for the durable backlog so fresh
     # discovery cannot indefinitely starve terms that need another attempt.
-    eligible_pending = [key for key in previous_pending if key in pending and pending[key].get("last_attempt") != now.date().isoformat()]
+    eligible_pending = [key for key in previous_pending if key in pending and not dictionary.contains(pending[key]["word"])
+                        and pending[key].get("last_attempt") != now.date().isoformat()]
     remaining_retries = max(0, 10 - len(retry_state["terms"]))
     eligible_pending = [key for key in eligible_pending if key not in retry_state["terms"]]
     if eligible_pending and remaining_retries:
@@ -333,6 +339,9 @@ def collect(now, excluded, limit, readings, pending, categories, c, *, retry_sta
                         key = c.normalize(word)
                         if key in excluded:
                             counts["already_seen"] += 1
+                            continue
+                        if dictionary.contains(word):
+                            counts["already_registered"] += 1
                             continue
                         if key not in evidence:
                             previous = pending.get(key, {})

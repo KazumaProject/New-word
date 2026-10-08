@@ -3,21 +3,70 @@ import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from release_support import NewsFixture, collector, data, candidate, evidence, article, NOW
+from release_support import NewsFixture, collector, data, release, candidate, evidence, article, NOW
 
 pipeline = collector.candidate_pipeline
 
 
 class CategoryPipelineTests(NewsFixture):
-    def test_release_collection_has_no_issue_or_dictionary_api(self):
+    def test_release_collection_has_no_issue_api(self):
         import test_collect_new_words as legacy
         self.rss = evidence("新語テスト")
         with patch.object(legacy.collector, "github_api", side_effect=AssertionError("Issue/dictionary API")):
             self.assertEqual(self.run_main(), 0)
         row = self.published()[0]
-        self.assertEqual(row["dictionary_check"], {"status": "not_checked"})
+        self.assertEqual(row["dictionary_check"], self.dictionary.check(row["word"], NOW.date().isoformat()))
         self.assertNotIn("id", row)
         self.assertNotIn("dictionary", row)
+
+    def test_registered_spelling_is_excluded_before_article_fetching(self):
+        self.dictionary.words.add(collector.normalize("Cloud Nova"))
+        self.rss = evidence("ＣＬＯＵＤ　ＮＯＶＡ")
+        with patch.object(collector, "verify_usage_sources", side_effect=AssertionError("Already registered")):
+            self.assertEqual(self.run_main(), 0)
+        self.assertFalse(self.published())
+        self.assertFalse(self.pending())
+
+    def test_registered_pending_term_preserves_notes_without_consuming_retry_budget(self):
+        row = {**candidate("既存の名称"), "manual_notes": "保存しておくメモ"}
+        self.queue({row["normalized"]: row})
+        self.dictionary.words.add(row["normalized"])
+        with patch.object(collector, "verify_usage_sources", side_effect=AssertionError("Already registered")):
+            self.assertEqual(self.run_main(), 0)
+        saved = self.pending()[row["normalized"]]
+        self.assertEqual(saved["manual_notes"], row["manual_notes"])
+        self.assertEqual(saved["dictionary_check"]["status"], "present")
+        self.assertEqual(json.loads(self.pending_path.read_text())["retry_state"]["terms"], [])
+
+    def test_rebuild_migrates_unchecked_rows_and_preserves_dates_notes_and_categories(self):
+        row = {**self.seed[0], "dictionary_check": {"status": "not_checked"}, "manual_notes": "手動メモ"}
+        data.save_entries([row], self.directory)
+        with patch.object(collector, "google_news_rss", side_effect=AssertionError("No news in rebuild")):
+            self.assertEqual(self.run_main(mode="rebuild"), 0)
+        saved = data.load_entries(self.directory)[0]
+        self.assertEqual(saved, {**row, "dictionary_check": self.dictionary.check(row["word"], NOW.date().isoformat())})
+
+    def test_unavailable_dictionary_stops_even_rebuild_without_writing_data(self):
+        before = {path.name: path.read_bytes() for path in self.directory.glob("*.json*")}
+        with patch.object(release.dictionaries.DictionaryIndex, "from_environment", side_effect=ValueError("corrupt index")):
+            self.assertEqual(self.run_main(mode="rebuild"), 1)
+        self.assertEqual(before, {path.name: path.read_bytes() for path in self.directory.glob("*.json*")})
+
+    def test_saved_registered_words_keep_manual_notes_and_are_marked_for_exclusion(self):
+        row = {**self.seed[0], "manual_notes": "確認した情報"}
+        data.save_entries([row], self.directory)
+        self.dictionary.words.add(row["normalized"])
+        self.assertEqual(self.run_main(mode="rebuild"), 0)
+        saved = data.load_entries(self.directory)[0]
+        self.assertEqual(saved["dictionary_check"]["status"], "present")
+        self.assertEqual(saved["manual_notes"], row["manual_notes"])
+
+    def test_missing_index_stops_collection_before_news_or_data_changes(self):
+        before = {path.name: path.read_bytes() for path in self.directory.glob("*.json*")}
+        with patch.object(release.dictionaries.DictionaryIndex, "from_environment", side_effect=ValueError("missing index")), \
+                patch.object(collector, "google_news_rss", side_effect=AssertionError("No search without verification")):
+            self.assertEqual(self.run_main(), 1)
+        self.assertEqual(before, {path.name: path.read_bytes() for path in self.directory.glob("*.json*")})
 
     def test_uncertain_and_estimated_readings_remain_pending(self):
         self.rss = evidence("UnknownTerm")

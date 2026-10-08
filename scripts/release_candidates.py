@@ -455,6 +455,6 @@ def verify_usage_sources(word, sources, readings):
     return candidate_pipeline.verified_usage(word, sources, readings, SimpleNamespace(**globals()))
 
 
-def collect_candidates(now, excluded, limit, readings, *, pending, retry_state):
+def collect_candidates(now, excluded, limit, readings, *, pending, retry_state, dictionary):
     return candidate_pipeline.collect(now, excluded, limit, readings, pending, CATEGORIES,
-                                      SimpleNamespace(**globals()), retry_state=retry_state)
+                                      SimpleNamespace(**globals()), retry_state=retry_state, dictionary=dictionary)
