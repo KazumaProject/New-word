@@ -18,26 +18,46 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
-from types import SimpleNamespace
+from collections import Counter
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 REPO = os.environ.get("GITHUB_REPOSITORY", "KazumaProject/New-word")
 TOKEN = os.environ.get("GH_TOKEN", "")
+CODE_SEARCH_TOKEN = os.environ.get("CODE_SEARCH_TOKEN", "")
 TZ = ZoneInfo("America/Toronto")
 DAILY_LIMIT = 10
 SEEN_PATH = Path("data/seen.tsv")
 READINGS_PATH = Path(__file__).resolve().parents[1] / "data/readings.json"
 SEEN_FIELDS = ["date", "reading", "word", "pos", "id", "normalized"]
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import candidate_pipeline
+MOZC_ID_DEF = "https://raw.githubusercontent.com/google/mozc/master/src/data/dictionary_oss/id.def"
 
-PENDING_PATH = Path("data/pending.json")
-CATEGORIES = candidate_pipeline.load_categories(Path(__file__).resolve().parents[1] / "data/categories.json")
+SEARCH_QUERIES = (
+    '"提供開始" 新サービス',
+    '"発表" 新製品',
+    '"開発" 新技術',
+    '"新機能" 発表',
+    '"新ブランド" 発表',
+    '"新設" 研究',
+)
+FALLBACK_QUERIES = (
+    'AI モデル "発表"',
+    '医療 技術 "研究"',
+    '宇宙 "発表"',
+    'ゲーム "発売"',
+    'ブランド "名称"',
+)
+SEARCH_STAGES = (
+    ("直近24時間", 1, SEARCH_QUERIES),
+    ("補充: 直近30日", 30, SEARCH_QUERIES + FALLBACK_QUERIES),
+    ("補充: 直近365日", 365, SEARCH_QUERIES + FALLBACK_QUERIES),
+    ("補充: 期間制限なし", None, SEARCH_QUERIES + FALLBACK_QUERIES),
+)
 
 GENERIC_REJECT = {
-    "新サービス", "新製品", "新技術", "新機能", "新ブランド",
-    "サービス開始", "提供開始", "株式会社",
+    "サービス", "新サービス", "新製品", "新技術", "新機能", "新ブランド",
+    "生成AI", "人工知能", "スマートフォン", "アプリ", "システム", "プラットフォーム",
+    "プロジェクト", "サービス開始", "提供開始", "研究開発", "株式会社",
 }
 ORG_HINTS = (
     "研究所", "研究センター", "研究室", "ラボ", "Lab", "Research",
@@ -46,6 +66,27 @@ ORG_HINTS = (
 QUOTE_RE = re.compile(r'[「『“"]([^」』”"]{2,60})[」』”"]')
 ASCII_NAME_RE = re.compile(r"(?<![A-Za-z0-9])(?:[A-Z][A-Za-z0-9+._-]*)(?:\s+[A-Z][A-Za-z0-9+._-]*){0,4}(?![A-Za-z0-9])")
 ENTRIES_RE = re.compile(r"<!-- new-word-entries\s*\n(.*?)\n-->", re.DOTALL)
+
+
+class CodeSearchDeferred(RuntimeError):
+    """The provider requires a cooldown before any more code searches."""
+
+
+class CodeSearchLimiter:
+    """Space every attempt, including retries, to stay below 10 requests/minute."""
+
+    def __init__(self) -> None:
+        self.last_request: float | None = None
+
+    def wait(self) -> None:
+        if self.last_request is not None:
+            delay = 6.1 - (time.monotonic() - self.last_request)
+            if delay > 0:
+                time.sleep(delay)
+        self.last_request = time.monotonic()
+
+
+CODE_SEARCH_LIMITER = CodeSearchLimiter()
 
 
 def retry_delay(error: urllib.error.HTTPError, attempt: int) -> float:
@@ -73,6 +114,7 @@ def request(
     headers: dict[str, str] | None = None,
     method: str = "GET",
     body: bytes | None = None,
+    code_search: bool = False,
     timeout: float = 30,
     read_attempts: int = 3,
     max_bytes: int | None = None,
@@ -83,6 +125,8 @@ def request(
     # Retrying a write after a lost response can create a duplicate Issue.
     attempts = read_attempts if method == "GET" else 1
     for attempt in range(1, attempts + 1):
+        if code_search:
+            CODE_SEARCH_LIMITER.wait()
         try:
             req = urllib.request.Request(url, data=body, headers=h, method=method)
             with urllib.request.urlopen(req, timeout=timeout) as response:
@@ -100,8 +144,12 @@ def request(
             if not retryable:
                 raise
             delay = retry_delay(error, attempt)
-            if delay > 60:
-                raise RuntimeError("Remote service requires a cooldown longer than 60 seconds") from error
+            rate_limited = error.code == 429 or error.code == 403
+            if code_search and rate_limited and (delay > 60 or attempt == attempts):
+                raise CodeSearchDeferred(
+                    f"GitHub code search requires a {delay:.0f}s cooldown; "
+                    "retry later or optionally configure CODE_SEARCH_TOKEN for a dedicated search token"
+                ) from error
             if attempt == attempts:
                 raise
             host = urllib.parse.urlsplit(url).netloc
@@ -165,6 +213,18 @@ def append_seen(rows: list[dict]) -> int:
     return len(additions)
 
 
+def fetch_id_map() -> dict[str, int]:
+    out = {}
+    for line in request(MOZC_ID_DEF).decode("utf-8").splitlines():
+        if line.strip():
+            number, label = line.split(maxsplit=1)
+            out[label] = int(number)
+    required = {pos_label("新製品"), pos_label("新研究所")}
+    if not required.issubset(out):
+        raise RuntimeError("Mozc id.def is missing a required POS label")
+    return out
+
+
 def google_news_rss(query: str) -> list[dict[str, str]]:
     params = urllib.parse.urlencode({"q": query, "hl": "ja", "gl": "JP", "ceid": "JP:ja"})
     root = ET.fromstring(request("https://news.google.com/rss/search?" + params))
@@ -199,8 +259,6 @@ def clean_candidate(raw: str) -> str | None:
     s = unicodedata.normalize("NFKC", html.unescape(raw)).strip(" \t\r\n・:：-—")
     s = re.sub(r"\s+", " ", s)
     if not (2 <= len(s) <= 50) or s in GENERIC_REJECT:
-        return None
-    if re.search(r"https?://|www\.|(?:\.{3}|…)$", s, re.IGNORECASE):
         return None
     if re.fullmatch(r"[0-9.,%＋+\-]+", s):
         return None
@@ -238,9 +296,9 @@ def extract_candidates(title: str) -> set[str]:
 def name_context(title: str, start: int, end: int) -> bool:
     """Require a local naming cue, rather than an announcement anywhere in a title."""
     before, after = title[max(0, start - 24):start], title[end:end + 30]
-    category = r"(?:新製品|新サービス|新技術|新機能|新ブランド|新モデル|製品|サービス|技術|ブランド|モデル|アプリ|ゲーム|アニメ|新曲|作品|人名|人物|選手|歌手|俳優|組織|施設|新駅|地名|研究所|用語|新語|言葉|俗語|略語|名称|名付けた|名づけた|命名)"
+    category = r"(?:新製品|新サービス|新技術|新機能|新ブランド|新モデル|製品|サービス|技術|ブランド|モデル|アプリ|ゲーム|研究所|名称|名付けた|名づけた|命名)"
     return bool(re.search(category + r"[『「“\"\s:：]*$", before)
-                or re.match(r"[』」”\"\s]*(?:とは|の意味|という|と呼ばれる|と称する|と名付け|と命名|を(?:発表|発売|提供|開発|公開|リリース)|が(?:登場|発売)|の(?:提供|販売|発売))", after))
+                or re.match(r"[』」”\"\s]*(?:という|と呼ばれる|と名付け|と命名|を(?:発表|発売|提供|開発|公開|リリース)|が(?:登場|発売)|の(?:提供|販売|発売))", after))
 
 
 def kana_reading(value: str) -> str | None:
@@ -485,27 +543,30 @@ class ReadingResolver:
         return result.copy()
 
 
-def pos_label(word: str, kind: str = "proper") -> str:
-    if kind == "common":
-        return "名詞,一般,*,*,*,*,*"
-    if kind == "person":
-        return "名詞,固有名詞,人名,一般,*,*,*"
-    if kind == "place":
-        return "名詞,固有名詞,地域,一般,*,*,*"
-    if kind == "organization" or any(hint in word for hint in ORG_HINTS):
+def pos_label(word: str) -> str:
+    if any(hint in word for hint in ORG_HINTS):
         return "名詞,固有名詞,組織,*,*,*,*"
     return "名詞,固有名詞,一般,*,*,*,*"
 
 
 def github_api(method: str, path: str, payload: dict | None = None):
-    if not TOKEN:
+    code_search = path.startswith("/search/code?")
+    token = (CODE_SEARCH_TOKEN or TOKEN) if code_search else TOKEN
+    if not token:
         raise RuntimeError("GH_TOKEN is not set")
-    headers = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28"}
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
     body = None
     if payload is not None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
-    raw = request("https://api.github.com" + path, headers=headers, method=method, body=body)
+    raw = request(
+        "https://api.github.com" + path, headers=headers, method=method, body=body,
+        code_search=code_search,
+    )
     return json.loads(raw) if raw else None
 
 
@@ -528,7 +589,9 @@ def issue_rows(issue: dict) -> list[dict]:
     result = {}
     for match in ENTRIES_RE.finditer(body):
         data = json.loads(match.group(1))
-        if data.get("version") not in {1, 2, 3} or not isinstance(data.get("rows"), list):
+        # The categorized review list in Issue #6 uses v3. Keep legacy Issue
+        # publication unchanged while accepting its compatible history fields.
+        if data.get("version") not in {1, 3} or not isinstance(data.get("rows"), list):
             raise RuntimeError(f"Issue #{issue['number']} has unsupported candidate metadata")
         for row in data["rows"]:
             if not isinstance(row, dict) or any(not isinstance(row.get(field), str) for field in SEEN_FIELDS):
@@ -536,23 +599,11 @@ def issue_rows(issue: dict) -> list[dict]:
             key = normalize(row["word"])
             if not key or normalize(row["normalized"]) != key:
                 raise RuntimeError(f"Issue #{issue['number']} has inconsistent candidate metadata")
-            if data["version"] in {2, 3}:
-                allowed = {category["id"] for category in CATEGORIES}
-                if (not isinstance(row.get("categories"), list) or not row["categories"]
-                        or any(category not in allowed for category in row["categories"])
-                        or row.get("category") != row["categories"][0]):
-                    raise RuntimeError(f"Issue #{issue['number']} has invalid category metadata")
-                if data["version"] == 2 and (not isinstance(row.get("dictionary"), dict)
-                        or not row["dictionary"].get("release")
-                        or not re.fullmatch(r"[0-9a-f]{64}", row["dictionary"].get("manifest_sha256", ""))):
-                    raise RuntimeError(f"Issue #{issue['number']} has invalid verified candidate metadata")
-                if data["version"] == 3 and (row.get("dictionary_check") != {"status": "not_checked"} or row["id"] or row.get("dictionary")):
-                    raise RuntimeError(f"Issue #{issue['number']} has invalid collection-only metadata")
             result[key] = row
     for match in re.finditer(r"```tsv\s*\n(.*?)```", body, re.DOTALL):
         for row in csv.DictReader(io.StringIO(match.group(1)), delimiter="\t"):
             word = row.get("表記")
-            if not word or not all(row.get(field) for field in ("読み", "品詞")) or (not row.get("左ID") and row.get("辞書照合") != "未確認"):
+            if not word or not all(row.get(field) for field in ("読み", "左ID", "品詞")):
                 continue
             key = normalize(word)
             result.setdefault(key, {
@@ -565,7 +616,7 @@ def issue_rows(issue: dict) -> list[dict]:
     visible = []
     for line in body.splitlines():
         cells = line.split("|")
-        if line.startswith("|") and len(cells) in {7, 8}:
+        if line.startswith("|") and len(cells) == 8:
             visible.append((html.unescape(cells[2].strip()), html.unescape(cells[1].strip())))
     for match in re.finditer(r"```tsv\s*\n(.*?)```", body, re.DOTALL):
         visible.extend((row.get("表記", ""), row.get("読み", ""))
@@ -576,6 +627,14 @@ def issue_rows(issue: dict) -> list[dict]:
             result[key] = {**result[key], "reading": reading, "reading_method": "manual",
                            "reading_status": "confirmed", "reading_sources": [], "reading_note": "手動で確認済み"}
     return list(result.values())
+
+
+def already_in_japanese_keyboard(word: str) -> bool:
+    params = urllib.parse.urlencode({"q": f'"{word}" repo:KazumaProject/JapaneseKeyboard', "per_page": 1})
+    data = github_api("GET", "/search/code?" + params)
+    if data.get("incomplete_results") or type(data.get("total_count")) is not int:
+        raise RuntimeError(f"Code search did not complete for {word!r}")
+    return data["total_count"] > 0
 
 
 def select_sources(items: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -596,17 +655,87 @@ def select_sources(items: list[dict[str, str]]) -> list[dict[str, str]]:
     return []
 
 
+def collect_candidates(now: dt.datetime, excluded: set[str], id_map: dict[str, int], limit: int,
+                       readings: ReadingResolver | None = None) -> list[dict]:
+    checked = {}
+    readings = readings or ReadingResolver()
+    reference = now.astimezone(dt.timezone.utc)
+    for label, days, queries in SEARCH_STAGES:
+        counts = Counter()
+        evidence = {}
+        print(f"Search: {label}", flush=True)
+        try:
+            cutoff = reference - dt.timedelta(days=days) if days is not None else None
+            for query in queries:
+                counts["queries"] += 1
+                rss_query = f"{query} when:{days}d" if days is not None else query
+                print(f"Fetch RSS ({counts['queries']}/{len(queries)}): {rss_query}", flush=True)
+                for item in google_news_rss(rss_query):
+                    counts["articles"] += 1
+                    published = article_date(item)
+                    if published is None or published > reference:
+                        counts["invalid_or_future_date"] += 1
+                        continue
+                    if cutoff is not None and published < cutoff:
+                        counts["outside_window"] += 1
+                        continue
+                    for word in sorted(extract_candidates(item["title"])):
+                        key = normalize(word)
+                        entry = evidence.setdefault(key, {"variants": {}, "items": {}})
+                        entry["variants"][word] = max(published, entry["variants"].get(word, published))
+                        entry["items"][(normalize(item["source"]), item["link"])] = item
 
-def require_official_name(word, sources, readings):
-    return candidate_pipeline.official_name(word, sources, readings, SimpleNamespace(**globals()))
+            counts["candidates"] = len(evidence)
+            ranked = []
+            for key, entry in evidence.items():
+                if key in excluded:
+                    counts["already_seen"] += 1
+                    continue
+                items = list(entry["items"].values())
+                publishers = {normalize(item["source"]) for item in items if item["source"].strip()}
+                if len(publishers) < 2 or len({item["link"] for item in items}) < 2:
+                    counts["fewer_than_two_publishers"] += 1
+                    continue
+                word = min(entry["variants"], key=lambda value: (-entry["variants"][value].timestamp(), value))
+                pos = pos_label(word)
+                if pos not in id_map:
+                    counts["missing_pos_id"] += 1
+                    continue
+                newest = max(article_date(item).timestamp() for item in items)
+                ranked.append((-len(publishers), -newest, word, key, pos, items))
 
-
-def verify_usage_sources(word, sources, readings):
-    return candidate_pipeline.verified_usage(word, sources, readings, SimpleNamespace(**globals()))
-
-
-def collect_candidates(now, excluded, limit, readings, *, pending):
-    return candidate_pipeline.collect(now, excluded, limit, readings, pending, CATEGORIES, SimpleNamespace(**globals()))
+            accepted = []
+            for _, _, word, key, pos, items in sorted(ranked):
+                sources = select_sources(items)
+                if len(sources) < 2:
+                    counts["fewer_than_two_distinct_sources"] += 1
+                    continue
+                if key not in checked:
+                    print(f"Check existing word: {word}", flush=True)
+                    try:
+                        checked[key] = already_in_japanese_keyboard(word)
+                    except CodeSearchDeferred as error:
+                        counts["code_search_deferred"] += 1
+                        print(f"{error}; confirmed candidates: {len(accepted)}", flush=True)
+                        if not accepted:
+                            raise
+                        break
+                if checked[key]:
+                    counts["already_registered"] += 1
+                    continue
+                accepted.append({
+                    "date": now.date().isoformat(), **readings.resolve(word, sources), "word": word,
+                    "pos": pos, "id": str(id_map[pos]), "normalized": key, "sources": sources,
+                    "supplement": days != 1,
+                })
+                if len(accepted) >= limit:
+                    break
+            counts["accepted"] = len(accepted)
+            if accepted:
+                return accepted
+        finally:
+            print(f"Results ({label}): {json.dumps(dict(counts), ensure_ascii=False, sort_keys=True)}", flush=True)
+    return []
 
 
 def markdown_cell(value: str) -> str:
@@ -614,13 +743,10 @@ def markdown_cell(value: str) -> str:
 
 
 def render_rows(rows: list[dict]) -> str:
-    review = bool(rows) and all(row.get("dictionary_check") == {"status": "not_checked"} for row in rows)
     lines = [
         "| 読み | 表記 | Mozc品詞 | id.def ID | 根拠/出典 | 備考 |",
         "|---|---|---|---:|---|---|",
     ]
-    if review:
-        lines = ["| 読み | 表記 | 品詞 | 根拠/出典 | 備考 |", "|---|---|---|---|---|"]
     for row in rows:
         sources = "<br>".join(
             f"[{markdown_cell(source['source'])}](<{source['link']}>)" for source in row["sources"]
@@ -638,60 +764,33 @@ def render_rows(rows: list[dict]) -> str:
             if row.get("reading_note"):
                 notes.append(markdown_cell(row["reading_note"]))
         if row["supplement"]:
-            notes.append("補充候補: 過去の記事も対象")
-        if row.get("official_name_sources"):
-            notes.append("公式名称: " + "、".join(
-                f"[{markdown_cell(source['source'])}](<{source['link']}>)"
-                for source in row["official_name_sources"]
-            ))
+            notes.append("補充候補: 過去の未登録語を含む")
         lines.append(
             f"| {markdown_cell(row['reading'])} | {markdown_cell(row['word'])} | "
-            f"`{row['pos']}` | " + ("" if review else f"{row['id']} | ") + f"{sources} | {' / '.join(notes)} |"
+            f"`{row['pos']}` | {row['id']} | {sources} | {' / '.join(notes)} |"
         )
-    verified = bool(rows) and all(row.get("dictionary") and row.get("categories") for row in rows)
-    fields = ["読み", "表記", "左ID", "右ID", "品詞"] + (["分類", "辞書照合"] if review else ["分類", "辞書リリース", "辞書リポジトリ", "辞書manifestSHA256"] if verified else [])
-    lines += ["", "## TSV", "", "```tsv", "\t".join(fields)]
+    lines += ["", "## TSV", "", "```tsv", "読み\t表記\t左ID\t右ID\t品詞"]
     for row in rows:
         if kana_reading(row["reading"]):
-            output = io.StringIO()
-            values = [row["reading"], row["word"], row["id"], row["id"], row["pos"]]
-            if review:
-                values += [",".join(row["categories"]), "未確認"]
-            elif verified:
-                values += [",".join(row["categories"]), row["dictionary"]["release"], row["dictionary"]["repository"], row["dictionary"]["manifest_sha256"]]
-            csv.writer(output, delimiter="\t", lineterminator="").writerow(values)
-            lines.append(output.getvalue())
+            lines.append(f"{row['reading']}\t{row['word']}\t{row['id']}\t{row['id']}\t{row['pos']}")
     if any(not kana_reading(row["reading"]) for row in rows):
         lines.insert(lines.index("```tsv"), "読み未確定の語はTSVから除外しています。\n")
     lines += ["```", ""]
     # Escape comment delimiters so a candidate cannot truncate the metadata.
-    metadata = json.dumps({"version": 3 if review else 2 if verified else 1, "rows": rows}, ensure_ascii=False).replace("--", "\\u002d\\u002d")
+    metadata = json.dumps({"version": 1, "rows": rows}, ensure_ascii=False).replace("--", "\\u002d\\u002d")
     lines += ["<!-- new-word-entries", metadata, "-->"]
     return "\n".join(lines)
 
 
-def render_grouped_rows(rows: list[dict]) -> str:
-    if not rows or not all(row.get("category") for row in rows):
-        return render_rows(rows)
-    separator = "\n\n## TSV\n\n"
-    groups = []
-    for category in CATEGORIES:
-        group = [row for row in rows if row["category"] == category["id"]]
-        if group:
-            groups.append(f"## {category['label']}\n\n" + render_rows(group).split(separator, 1)[0])
-    groups.append("## TSV\n\n" + render_rows(rows).split(separator, 1)[1])
-    return "\n\n".join(groups)
-
-
 def render_issue(title: str, rows: list[dict]) -> str:
     return "\n".join([
-        f"# {title}", "", render_grouped_rows(rows), "", "## 確認範囲", "",
-        f"- 過去の {REPO} Issue と data/seen.tsv による掲載済み語の除外",
-        "- 辞書照合は未確認。掲載語が辞書に未収録であるとは判定していません",
-        "- 掲載済み語の重複はNFKC・空白・英字大小を正規化して除外",
-        "- 読み確認済みの名詞・固有名詞のみ。推定読みは掲載しません",
-        "- 未確定語は data/pending.json に保存。TSVはレビュー候補。品詞IDは辞書接続まで空欄",
-        "", "_日本語での使用例と読みを確認したIME用のレビュー候補です。_",
+        f"# {title}", "", render_rows(rows), "", "## 重複チェック", "",
+        f"- 過去の {REPO} Issue と data/seen.tsv",
+        "- KazumaProject/JapaneseKeyboard のGitHubコード検索",
+        "- 同一候補はNFKC正規化 + 大文字小文字正規化で比較",
+        "", "## 品詞", "", f"Mozc 最新 id.def: {MOZC_ID_DEF}", "",
+        "> 注: JapaneseKeyboard のバイナリ辞書内部は未確認です。コード検索で見つからないことは、辞書本体に未登録であることを保証しません。",
+        "", "_Generated automatically by GitHub Actions without a paid AI API._",
     ])
 
 
@@ -714,7 +813,7 @@ def publish_candidates(title: str, rows: list[dict], existing: dict | None) -> t
             selected.append(row)
             previous_keys.add(key)
     if selected:
-        body = (current.get("body") or "") + "\n\n## 追加候補\n\n" + render_grouped_rows(selected)
+        body = (current.get("body") or "") + "\n\n## 追加候補\n\n" + render_rows(selected)
         current = github_api("PATCH", path, {"body": body})
     return current["html_url"], previous_rows + selected
 
@@ -750,7 +849,7 @@ def replace_issue_readings(issue: dict, updates: dict[str, dict]) -> str:
         if not line.startswith("|"):
             continue
         cells = line.rstrip("\r\n").split("|")
-        if len(cells) not in {7, 8}:
+        if len(cells) != 8:
             continue
         key = normalize(html.unescape(cells[2].strip()))
         row = replacements.get(key)
@@ -769,7 +868,7 @@ def replace_issue_readings(issue: dict, updates: dict[str, dict]) -> str:
     def tsv(match):
         output = io.StringIO()
         reader = csv.DictReader(io.StringIO(match[1]), delimiter="\t")
-        if (reader.fieldnames or [])[:5] != ["読み", "表記", "左ID", "右ID", "品詞"]:
+        if reader.fieldnames != ["読み", "表記", "左ID", "右ID", "品詞"]:
             return match[0]
         writer = csv.DictWriter(output, fieldnames=reader.fieldnames, delimiter="\t", lineterminator="\n")
         writer.writeheader()
@@ -789,11 +888,8 @@ def replace_issue_readings(issue: dict, updates: dict[str, dict]) -> str:
             key = normalize(row["word"])
             if key in replacements and key not in present and kana_reading(replacements[key]["reading"]):
                 row = replacements[key]
-                entry = {"読み": row["reading"], "表記": row["word"], "左ID": row["id"], "右ID": row["id"], "品詞": row["pos"],
-                         "分類": ",".join(row.get("categories", [])), "辞書照合": "未確認" if row.get("dictionary_check") == {"status": "not_checked"} else "", "辞書リリース": row.get("dictionary", {}).get("release", ""),
-                         "辞書リポジトリ": row.get("dictionary", {}).get("repository", ""),
-                         "辞書manifestSHA256": row.get("dictionary", {}).get("manifest_sha256", "")}
-                writer.writerow({field: entry.get(field, "") for field in reader.fieldnames})
+                writer.writerow({"読み": row["reading"], "表記": row["word"], "左ID": row["id"],
+                                 "右ID": row["id"], "品詞": row["pos"]})
                 present.add(key)
         return "```tsv\n" + output.getvalue() + "```"
 
@@ -887,7 +983,52 @@ def write_summary(lines: list[str]) -> None:
 
 
 def main(now: dt.datetime | None = None) -> int:
-    return candidate_pipeline.run(SimpleNamespace(**globals()), now)
+    now = (now or dt.datetime.now(TZ)).astimezone(TZ)
+    title = f"新語候補 {now.date().isoformat()}"
+    print(f"Collect: Toronto {now:%Y-%m-%d %H:%M %Z}; daily limit {DAILY_LIMIT}", flush=True)
+    try:
+        issues = list_issues()
+        readings = ReadingResolver()
+        refresh_issue_readings(issues, resolver=readings, now=now)
+        matches = [issue for issue in issues if issue.get("title") == title]
+        existing = min(matches, key=lambda issue: issue["number"]) if matches else None
+        previous_rows = issue_rows(existing) if existing else []
+        # An existing Issue also recovers seen.tsv after a failed database push.
+        append_seen(previous_rows)
+        remaining = max(0, DAILY_LIMIT - len(previous_rows))
+        if remaining == 0:
+            print(f"Daily Issue already has {len(previous_rows)} candidates: {existing['html_url']}")
+            write_summary([f"## {title}", f"掲載済み: {len(previous_rows)}語。上限に達しているため追加なし。", existing["html_url"]])
+            return 0
+
+        excluded = load_seen()
+        for issue in issues:
+            excluded.update(normalize(row["word"]) for row in issue_rows(issue))
+        deferred = None
+        try:
+            accepted = collect_candidates(now, excluded, fetch_id_map(), remaining, readings)
+        except CodeSearchDeferred as error:
+            if not previous_rows:
+                raise
+            deferred = str(error)
+            accepted = []
+        if not accepted:
+            if previous_rows:
+                print(f"No additional candidates; keeping {len(previous_rows)} published candidates.")
+                reason = "コード検索の待機制限により追加なし。" if deferred else "追加候補なし。"
+                write_summary([f"## {title}", f"掲載済み: {len(previous_rows)}語。{reason}", existing["html_url"]])
+                return 0
+            raise RuntimeError("All search stages exhausted: no verified, previously unlisted candidates")
+
+        url, published = publish_candidates(title, accepted, existing)
+        saved = append_seen(published)
+        print(f"Created/updated: {url}\nDaily candidates: {len(published)}\nNew seen records: {saved}")
+        write_summary([f"## {title}", f"掲載: {len(published)}語 / 履歴への追加: {saved}語", url])
+        return 0
+    except Exception as error:
+        print(f"Collection failed: {error}", file=sys.stderr, flush=True)
+        write_summary([f"## {title}: 失敗", f"理由: {error}", "探索件数と除外理由は Collect new words のログを確認してください。"])
+        return 1
 
 
 if __name__ == "__main__":

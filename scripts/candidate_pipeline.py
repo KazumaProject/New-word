@@ -232,10 +232,11 @@ def round_robin(rows: list[dict], categories: list[dict], limit: int) -> list[di
     return result
 
 
-def collect(now, excluded, limit, readings, pending, categories, c):
+def collect(now, excluded, limit, readings, pending, categories, c, *, retry_state):
     order = [category["id"] for category in categories]
     evidence, ready, attempted = {}, {}, set()
     previous_pending = list(sorted(pending))
+    allowed_retries = set()
     for key in list(pending):
         if key in excluded:
             del pending[key]
@@ -253,6 +254,12 @@ def collect(now, excluded, limit, readings, pending, categories, c):
         row = {**pending.get(key, {}), **entry, "date": now.date().isoformat(), "normalized": key, "categories": tags, "category": tags[0], "kind": kind,
                "last_attempt": now.date().isoformat(), "dictionary_check": {"status": "not_checked"}}
         row.pop("dictionary", None)
+        if key in previous_pending and key not in allowed_retries:
+            # News can supply new evidence without bypassing the persistent
+            # ten-term daily retry budget on subsequent runs or search stages.
+            row["last_attempt"] = pending.get(key, {}).get("last_attempt", "")
+            pending[key] = row
+            return
         if len(sources) < 2:
             ready.pop(key, None)
             row["pending_reason"] = "独立した日本語使用例が2件未満"
@@ -289,13 +296,17 @@ def collect(now, excluded, limit, readings, pending, categories, c):
     # Reserve half of the shared page budget for the durable backlog so fresh
     # discovery cannot indefinitely starve terms that need another attempt.
     eligible_pending = [key for key in previous_pending if key in pending and pending[key].get("last_attempt") != now.date().isoformat()]
-    if eligible_pending:
+    remaining_retries = max(0, 10 - len(retry_state["terms"]))
+    eligible_pending = [key for key in eligible_pending if key not in retry_state["terms"]]
+    if eligible_pending and remaining_retries:
         offset = now.date().toordinal() * 10 % len(eligible_pending)
         page_limit = readings.page_limit
         if page_limit is not None:
             readings.page_limit = min(page_limit, readings.page_count + max(1, page_limit // 2))
         try:
-            for key in (eligible_pending[offset:] + eligible_pending[:offset])[:10]:
+            for key in (eligible_pending[offset:] + eligible_pending[:offset])[:remaining_retries]:
+                allowed_retries.add(key)
+                retry_state["terms"].append(key)
                 resolve(key, pending[key])
         finally:
             readings.page_limit = page_limit
@@ -351,52 +362,3 @@ def collect(now, excluded, limit, readings, pending, categories, c):
             row["category"] = row["categories"][0]
     ranked_ready = sorted(ready.values(), key=lambda row: (-len(row["sources"]), -max(c.article_date(item).timestamp() for item in row["sources"]), row["word"]))
     return round_robin(ranked_ready, categories, limit)
-
-
-def run(c, now=None) -> int:
-    now = (now or dt.datetime.now(c.TZ)).astimezone(c.TZ)
-    title = f"新語候補 {now.date().isoformat()}"
-    print(f"Collect: Toronto {now:%Y-%m-%d %H:%M %Z}; daily limit {c.DAILY_LIMIT}", flush=True)
-    try:
-        issues = c.list_issues()
-        readings = c.ReadingResolver()
-        matches = [issue for issue in issues if issue.get("title") == title]
-        existing = min(matches, key=lambda issue: issue["number"]) if matches else None
-        previous = c.issue_rows(existing) if existing else []
-        c.append_seen(previous)
-        excluded = c.load_seen()
-        for issue in issues:
-            excluded.update(c.normalize(row["word"]) for row in c.issue_rows(issue))
-        pending = load_pending(c.PENDING_PATH, c.normalize)
-        for key in list(pending):
-            if key in excluded:
-                del pending[key]
-        remaining = max(0, c.DAILY_LIMIT - len(previous))
-        if remaining == 0:
-            save_pending(c.PENDING_PATH, pending)
-            c.write_summary([f"## {title}", f"掲載済み: {len(previous)}語。上限に達しているため追加なし。", existing["html_url"]])
-            return 0
-        try:
-            accepted = c.collect_candidates(now, excluded, remaining, readings, pending=pending)
-        except Exception:
-            save_pending(c.PENDING_PATH, pending)
-            raise
-        save_pending(c.PENDING_PATH, pending)
-        if not accepted:
-            lines = [f"## {title}", "確認済みの追加候補なし。空のIssueは作成しません。", f"保留: {len(pending)}語 / 辞書照合: 未確認"]
-            if previous:
-                lines += [f"掲載済み: {len(previous)}語。追加候補なし。", existing["html_url"]]
-            c.write_summary(lines)
-            return 0
-        url, published = c.publish_candidates(title, accepted, existing)
-        saved = c.append_seen(published)
-        for row in published:
-            pending.pop(c.normalize(row["word"]), None)
-        save_pending(c.PENDING_PATH, pending)
-        print(f"Created/updated: {url}; candidates: {len(published)}; new history: {saved}")
-        c.write_summary([f"## {title}", f"掲載: {len(published)}語 / 履歴への追加: {saved}語", f"保留: {len(pending)}語 / 辞書照合: 未確認", url])
-        return 0
-    except Exception as error:
-        print(f"Collection failed: {error}", file=c.sys.stderr, flush=True)
-        c.write_summary([f"## {title}: 失敗", f"理由: {error}", "根拠・読みを確認できない語は掲載しません。"])
-        return 1

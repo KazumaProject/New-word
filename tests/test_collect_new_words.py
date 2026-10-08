@@ -21,11 +21,12 @@ spec = importlib.util.spec_from_file_location(
 collector = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(collector)
 NOW = dt.datetime(2026, 10, 2, 20, 15, tzinfo=collector.TZ)
+ID_MAP = {collector.pos_label("製品"): 1920, collector.pos_label("研究所"): 1929}
 
 
 def article(word, publisher, age=dt.timedelta(hours=1), link=None, now=NOW):
     return {
-        "title": f"{publisher}が解説する新語「{word}」の意味",
+        "title": f"新製品「{word}」を発表",
         "link": link or f"https://example.com/{word}/{publisher}",
         "pubdate": email.utils.format_datetime((now - age).astimezone(dt.timezone.utc)),
         "source": publisher,
@@ -57,13 +58,23 @@ def issue(number, rows, extra=""):
 
 
 class FakeGitHub:
-    def __init__(self, issues=()):
+    def __init__(self, issues=(), registered=()):
         self.issues = copy.deepcopy(list(issues))
+        self.registered = {collector.normalize(word) for word in registered}
         self.calls = []
         self.fail_write = False
+        self.search_result = None
 
     def __call__(self, method, path, payload=None):
         self.calls.append((method, path, copy.deepcopy(payload)))
+        if path.startswith("/search/code?"):
+            if self.search_result is not None:
+                if isinstance(self.search_result, Exception):
+                    raise self.search_result
+                return self.search_result
+            query = urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)["q"][0]
+            word = query.split('"')[1]
+            return {"total_count": int(collector.normalize(word) in self.registered), "incomplete_results": False}
         if method == "GET" and "?state=all" in path:
             page = int(urllib.parse.parse_qs(urllib.parse.urlsplit(path).query)["page"][0])
             return copy.deepcopy(self.issues[(page - 1) * 100:page * 100])
@@ -97,10 +108,7 @@ class CollectorTests(unittest.TestCase):
         for patcher in (
             patch.object(collector, "SEEN_PATH", self.seen),
             patch.object(collector, "github_api", side_effect=lambda *args: self.github(*args)),
-            patch.object(collector, "PENDING_PATH", Path(directory.name) / "pending.json"),
-            patch.object(collector, "verify_usage_sources", side_effect=lambda word, sources, readings: sources),
-            patch.object(collector, "require_official_name", return_value=[{"source": "公式", "link": "https://official.example/name"}]),
-            patch.object(collector.ReadingResolver, "resolve", side_effect=lambda word, sources: {"reading": collector.kana_reading(word) or "てすとよみ", "reading_status": "confirmed", "reading_method": "source", "reading_sources": sources, "reading_note": ""}),
+            patch.object(collector, "fetch_id_map", return_value=ID_MAP),
             patch.object(collector, "public_reading_document", return_value=""),
             patch.object(collector, "READINGS_PATH", Path(directory.name) / "readings.json"),
             patch.object(collector, "google_news_rss", side_effect=lambda query: self.rss),
@@ -128,6 +136,7 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(collector.load_seen(), {"クラウドノヴァ"})
         self.assertFalse(self.published()[0]["supplement"])
         self.assertIn("掲載: 1語", self.summary.read_text())
+        self.assertNotIn("補充:", self.output.getvalue())
 
     def test_toronto_dates_in_winter_summer_and_transition_days(self):
         for local_date, utc_date in (
@@ -153,7 +162,7 @@ class CollectorTests(unittest.TestCase):
                 self.assertEqual(self.run_main(), 0)
                 self.assertTrue(self.published()[0]["supplement"])
                 self.assertIn(f"Search: 補充: {expected_stage}", self.output.getvalue())
-                self.assertIn("過去の記事も対象", self.github.issues[0]["body"])
+                self.assertIn("過去の未登録語を含む", self.github.issues[0]["body"])
 
     def test_recent_window_is_twenty_four_elapsed_hours_across_dst(self):
         now = dt.datetime(2026, 11, 1, 19, tzinfo=collector.TZ)
@@ -164,14 +173,14 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(self.run_main(now), 0)
         self.assertTrue(self.published()[0]["supplement"])
 
-    def test_zero_candidates_succeeds_without_issue_or_seen_changes(self):
+    def test_zero_candidates_fails_without_issue_or_seen_changes(self):
         self.rss = evidence("単独媒体の名称", publishers=1)
         original = self.seen.read_bytes()
-        self.assertEqual(self.run_main(), 0)
+        self.assertEqual(self.run_main(), 1)
         self.assertEqual(self.github.issues, [])
         self.assertEqual(self.seen.read_bytes(), original)
         self.assertIn("期間制限なし", self.output.getvalue())
-        self.assertIn("pending", self.output.getvalue())
+        self.assertIn("fewer_than_two_publishers", self.output.getvalue())
 
     def test_invalid_future_and_old_dates_are_not_used_as_recent_evidence(self):
         self.rss = [
@@ -179,7 +188,7 @@ class CollectorTests(unittest.TestCase):
             article("未来日付", "媒体A", age=dt.timedelta(hours=-1)),
             article("古い日付", "媒体A", age=dt.timedelta(days=2)),
         ]
-        self.assertEqual(self.run_main(), 0)
+        self.assertEqual(self.run_main(), 1)
         self.assertIn("invalid_or_future_date", self.output.getvalue())
         self.assertIn("outside_window", self.output.getvalue())
 
@@ -192,12 +201,12 @@ class CollectorTests(unittest.TestCase):
 
     def test_repeated_feed_items_do_not_count_as_two_publishers(self):
         self.rss = [article("単独名称", "媒体A")] * 10
-        self.assertEqual(self.run_main(), 0)
+        self.assertEqual(self.run_main(), 1)
         self.assertFalse(any(path.startswith("/search/code?") for _, path, _ in self.github.calls))
 
     def test_duplicate_link_is_not_two_sources(self):
         self.rss = [article("同一リンク", source, link="https://example.com/shared") for source in ("媒体A", "媒体B")]
-        self.assertEqual(self.run_main(), 0)
+        self.assertEqual(self.run_main(), 1)
 
     def test_sources_include_distinct_publishers_even_when_first_has_many_articles(self):
         items = [article("名称", "媒体A", link=f"https://example.com/a{index}") for index in range(4)]
@@ -221,12 +230,12 @@ class CollectorTests(unittest.TestCase):
         words = [row["word"] for row in self.published()]
         self.assertEqual(words, ["多媒体の名称"] + [f"新名称{index:02}" for index in range(9)])
         self.assertNotIn("新名称09", collector.load_seen())
-        self.assertEqual(sum(path.startswith("/search/code?") for _, path, _ in self.github.calls), 0)
+        self.assertEqual(sum(path.startswith("/search/code?") for _, path, _ in self.github.calls), 10)
 
-    def test_already_seen_and_past_issue_words_are_excluded(self):
+    def test_already_seen_past_issue_and_registered_words_are_excluded(self):
         collector.append_seen([candidate("掲載済み")])
-        self.github = FakeGitHub([issue(1, [candidate("過去候補", date="2026-10-01")])])
-        for word in ("掲載済み", "過去候補", "未登録候補"):
+        self.github = FakeGitHub([issue(1, [candidate("過去候補", date="2026-10-01")])], registered=["登録済み"])
+        for word in ("掲載済み", "過去候補", "登録済み", "未登録候補"):
             self.rss.extend(evidence(word))
         self.assertEqual(self.run_main(), 0)
         self.assertEqual([row["word"] for row in self.published()], ["未登録候補"])
@@ -237,8 +246,31 @@ class CollectorTests(unittest.TestCase):
         self.assertEqual(self.run_main(), 0)
         self.assertEqual(self.published()[0]["word"], "Alpha")
 
+    def test_code_search_failure_and_incomplete_results_never_mean_unregistered(self):
+        for response in (urllib.error.URLError("search unavailable"), {"total_count": 0, "incomplete_results": True}, {}):
+            with self.subTest(response=response):
+                self.github = FakeGitHub()
+                self.github.search_result = response
+                self.rss = evidence("未確認名称")
+                original = self.seen.read_bytes()
+                self.assertEqual(self.run_main(), 1)
+                self.assertEqual(self.github.issues, [])
+                self.assertEqual(self.seen.read_bytes(), original)
 
+    def test_rate_limit_publishes_only_candidates_already_verified(self):
+        self.rss = evidence("FactoryLens") + evidence("ホームシック")
+        with patch.object(collector, "already_in_japanese_keyboard", side_effect=[False, collector.CodeSearchDeferred("628s cooldown")]):
+            self.assertEqual(self.run_main(), 0)
+        self.assertEqual([row["word"] for row in self.published()], ["FactoryLens"])
+        self.assertEqual(collector.load_seen(), {"factorylens"})
+        self.assertIn("code_search_deferred", self.output.getvalue())
 
+    def test_rate_limit_before_any_verified_candidate_fails(self):
+        self.rss = evidence("未確認の語")
+        with patch.object(collector, "already_in_japanese_keyboard", side_effect=collector.CodeSearchDeferred("628s cooldown")):
+            self.assertEqual(self.run_main(), 1)
+        self.assertEqual(self.github.issues, [])
+        self.assertEqual(collector.load_seen(), set())
 
     def test_same_day_append_preserves_human_text_and_respects_total_limit(self):
         old_rows = [candidate(f"掲載済み{index}") for index in range(9)]
@@ -261,6 +293,15 @@ class CollectorTests(unittest.TestCase):
             self.assertEqual(self.run_main(), 0)
         self.assertEqual(self.github.issues, [original])
 
+    def test_existing_daily_issue_is_successful_when_further_search_is_deferred(self):
+        original = issue(1, [candidate("掲載済みの候補")])
+        self.github = FakeGitHub([original])
+        self.rss = evidence("追加の未確認語")
+        with patch.object(collector.ReadingResolver, "estimate", return_value=None), patch.object(collector, "already_in_japanese_keyboard", side_effect=collector.CodeSearchDeferred("628s cooldown")):
+            self.assertEqual(self.run_main(), 0)
+        self.assertEqual(self.github.issues, [original])
+        self.assertEqual(collector.load_seen(), {"掲載済みの候補"})
+        self.assertIn("コード検索の待機制限", self.summary.read_text())
 
     def test_legacy_tsv_is_parsed_and_preserved_on_append(self):
         row = candidate("旧形式の候補")
@@ -365,8 +406,41 @@ class NetworkingTests(unittest.TestCase):
         self.assertEqual(opener.call_count, 1)
         sleep.assert_not_called()
 
+    def test_long_code_search_limit_fails_without_retrying_early(self):
+        error = urllib.error.HTTPError("https://api.github.com", 429, "limited", {"Retry-After": "628"}, None)
+        with patch.object(collector.urllib.request, "urlopen", side_effect=error) as opener, patch.object(collector, "CODE_SEARCH_LIMITER") as limiter, patch.object(collector.time, "sleep") as sleep:
+            with self.assertRaisesRegex(RuntimeError, "CODE_SEARCH_TOKEN"):
+                collector.request("https://api.github.com/search/code?q=example", code_search=True)
+        self.assertEqual(opener.call_count, 1)
+        limiter.wait.assert_called_once()
+        sleep.assert_not_called()
 
+    def test_dedicated_search_token_is_never_used_for_issue_writes(self):
+        with patch.object(collector, "TOKEN", "issue-token"), patch.object(collector, "CODE_SEARCH_TOKEN", "read-only-search-token"), patch.object(collector, "request", return_value=b'{}') as request:
+            collector.github_api("GET", "/search/code?q=example")
+            self.assertEqual(request.call_args.kwargs["headers"]["Authorization"], "Bearer read-only-search-token")
+            collector.github_api("POST", f"/repos/{collector.REPO}/issues", {"title": "test", "body": "test"})
+            self.assertEqual(request.call_args.kwargs["headers"]["Authorization"], "Bearer issue-token")
 
+    def test_code_search_attempts_including_retries_obey_ten_per_minute(self):
+        clock = [0.0]
+        attempts = []
+        limiter = collector.CodeSearchLimiter()
+        limited = urllib.error.HTTPError("https://example.com", 429, "limited", {"Retry-After": "2"}, None)
+        def sleep(seconds):
+            clock[0] += seconds
+        def open_request(*args, **kwargs):
+            attempts.append(clock[0])
+            if len(attempts) == 1:
+                raise limited
+            return self.response()
+        with patch.object(collector, "CODE_SEARCH_LIMITER", limiter), patch.object(collector.time, "monotonic", side_effect=lambda: clock[0]), patch.object(collector.time, "sleep", side_effect=sleep), patch.object(collector.urllib.request, "urlopen", side_effect=open_request):
+            for _ in range(10):
+                collector.request("https://example.com", code_search=True)
+        self.assertEqual(len(attempts), 11)
+        self.assertGreaterEqual(attempts[-1], 60)
+        for earlier, later in zip(attempts, attempts[1:]):
+            self.assertGreaterEqual(later - earlier, 6.1 - 1e-9)
 
 
 if __name__ == "__main__":

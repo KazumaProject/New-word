@@ -1,0 +1,2 @@
+data/release/*.jsonl text eol=lf
+data/release/pending.json text eol=lf

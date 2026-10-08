@@ -35,9 +35,9 @@ jobs:
         run: python3 -B -m unittest discover -s tests -v
 
       - name: Collect new words
-        id: collect_words
         env:
           GH_TOKEN: ${{ github.token }}
+          CODE_SEARCH_TOKEN: ${{ secrets.CODE_SEARCH_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           REFRESH_READINGS: ${{ inputs.refresh_readings }}
         run: |
@@ -47,17 +47,13 @@ jobs:
             python3 scripts/collect_new_words.py
           fi
 
-      - name: Commit published history and pending queue
-        if: always() && steps.collect_words.outcome != 'skipped'
+      - name: Commit seen-word database
         run: |
-          git add -- data/seen.tsv
-          if [ -f data/pending.json ]; then
-            git add -- data/pending.json
-          fi
-          if git diff --cached --quiet -- data/seen.tsv data/pending.json; then
+          if git diff --quiet -- data/seen.tsv; then
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore: update published words and pending candidates"
+          git add data/seen.tsv
+          git commit -m "chore: update seen new words"
           git push

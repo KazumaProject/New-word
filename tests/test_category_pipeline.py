@@ -1,100 +1,120 @@
 import datetime as dt
-import csv
-import io
 import json
 from types import SimpleNamespace
-import unittest
 from unittest.mock import patch
 
-import test_collect_new_words as legacy
-from test_collect_new_words import collector, candidate, evidence, article, issue, NOW
+from release_support import NewsFixture, collector, data, candidate, evidence, article, NOW
 
 pipeline = collector.candidate_pipeline
 
 
-class CategoryPipelineTests(unittest.TestCase):
-    setUp = legacy.CollectorTests.setUp
-    run_main = legacy.CollectorTests.run_main
-    published = legacy.CollectorTests.published
-
-    def test_collection_only_uses_this_project_and_marks_dictionary_unchecked(self):
+class CategoryPipelineTests(NewsFixture):
+    def test_release_collection_has_no_issue_or_dictionary_api(self):
+        import test_collect_new_words as legacy
         self.rss = evidence("新語テスト")
-        self.assertEqual(self.run_main(), 0)
-        self.assertTrue(all(path.startswith(f"/repos/{collector.REPO}/issues") for _, path, _ in self.github.calls))
+        with patch.object(legacy.collector, "github_api", side_effect=AssertionError("Issue/dictionary API")):
+            self.assertEqual(self.run_main(), 0)
         row = self.published()[0]
         self.assertEqual(row["dictionary_check"], {"status": "not_checked"})
-        self.assertEqual(row["id"], "")
+        self.assertNotIn("id", row)
         self.assertNotIn("dictionary", row)
-    def test_uncertain_readings_are_pending_and_not_seen(self):
+
+    def test_uncertain_and_estimated_readings_remain_pending(self):
         self.rss = evidence("UnknownTerm")
-        with patch.object(collector.ReadingResolver, "resolve", return_value={"reading": "要確認", "reading_status": "unconfirmed", "reading_estimate": "あんのうんたーむ", "reading_note": "推定"}):
+        with patch.object(collector.ReadingResolver, "resolve", return_value={
+                "reading": "要確認", "reading_status": "unconfirmed", "reading_estimate": "あんのうんたーむ"}):
             self.assertEqual(self.run_main(), 0)
-        self.assertEqual(self.github.issues, [])
-        self.assertEqual(collector.load_seen(), set())
-        queue = pipeline.load_pending(collector.PENDING_PATH, collector.normalize)
-        self.assertIn("unknownterm", queue)
+        self.assertFalse(self.published())
+        self.assertIn("unknownterm", self.pending())
+
     def test_pure_hiragana_identical_to_input_is_excluded(self):
         self.rss = evidence("あたらしい")
         self.assertEqual(self.run_main(), 0)
-        self.assertFalse(self.github.issues)
-    def test_category_overlap_groups_once_and_exports_unchecked_status(self):
+        self.assertFalse(self.published())
+
+    def test_overlap_retains_all_tags_and_has_one_primary_category(self):
         self.rss = evidence("クラウド語彙")
         self.assertEqual(self.run_main(), 0)
-        rows = self.published()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["category"], "life_food")
-        self.assertEqual(len(rows[0]["categories"]), 9)
-        body = self.github.issues[0]["body"]
-        self.assertIn("## 生活・食", body)
-        self.assertIn("分類\t辞書照合", body)
-        self.assertIn("辞書照合は未確認", body)
-        self.assertIn('"version": 3', body)
-    def test_round_robin_uses_multiple_categories_before_second_word(self):
+        self.assertEqual(len(self.published()), 1)
+        self.assertEqual(self.published()[0]["category"], "life_food")
+        self.assertEqual(len(self.published()[0]["categories"]), 9)
+
+    def test_round_robin_selects_across_categories(self):
         categories = [{"id": "one"}, {"id": "two"}, {"id": "three"}]
         rows = [{"category": "one", "word": str(i)} for i in range(10)] + [{"category": "two", "word": "B"}, {"category": "three", "word": "C"}]
         self.assertEqual([row["word"] for row in pipeline.round_robin(rows, categories, 4)], ["0", "B", "C", "1"])
-    def test_reading_refresh_retains_collection_tsv_columns(self):
-        row = {**candidate("読み修正の語彙"), "categories": ["technology"], "category": "technology", "dictionary_check": {"status": "not_checked"}, "id": ""}
-        current = issue(1, [row], extra="\n手動メモ: 語義を確認済み")
-        body = collector.replace_issue_readings(current, {row["normalized"]: {"reading": "よみしゅうせいのごい", "reading_status": "confirmed", "reading_method": "source"}})
-        tsv = body.split("```tsv\n", 1)[1].split("```", 1)[0]
-        entry = next(csv.DictReader(io.StringIO(tsv), delimiter="\t"))
-        self.assertEqual(entry["辞書照合"], "未確認")
-        self.assertEqual(entry["左ID"], "")
-        self.assertEqual(entry["分類"], "technology")
-        self.assertIn("手動メモ: 語義を確認済み", body)
-    def test_pending_is_retried_without_new_feed_articles(self):
-        row = {**candidate("再確認の名称"), "categories": ["technology"], "kind": "common"}
-        pipeline.save_pending(collector.PENDING_PATH, {collector.normalize(row["word"]): row})
+
+    def test_pending_is_retried_without_feed_articles_and_keeps_notes(self):
+        row = {**candidate("再確認の名称"), "manual_notes": "語義を確認済み"}
+        self.queue({row["normalized"]: row})
         self.assertEqual(self.run_main(), 0)
-        self.assertEqual(self.published()[0]["word"], row["word"])
-        self.assertEqual(pipeline.load_pending(collector.PENDING_PATH, collector.normalize), {})
-    def test_pending_retry_is_limited_to_ten_terms(self):
-        rows = {f"name{i}": {**candidate(f"Name{i}"), "categories": ["technology"], "kind": "common"} for i in range(25)}
-        pipeline.save_pending(collector.PENDING_PATH, rows)
-        with patch.object(collector.ReadingResolver, "resolve", return_value={"reading": "要確認", "reading_status": "unconfirmed"}) as resolver:
-            self.assertEqual(self.run_main(), 0)
-            self.assertEqual(resolver.call_count, 10)
-    def test_pending_retry_rotates_to_a_new_batch_on_the_next_day(self):
-        rows = {f"name{i}": {**candidate(f"Name{i}"), "categories": ["technology"], "kind": "common"} for i in range(25)}
-        pipeline.save_pending(collector.PENDING_PATH, rows)
+        self.assertEqual(self.published()[0]["manual_notes"], row["manual_notes"])
+        self.assertFalse(self.pending())
+
+    def test_pending_daily_budget_survives_reruns_and_feed_discovery(self):
+        rows = {f"name{i}": candidate(f"Name{i}") for i in range(25)}
+        self.queue(rows)
         with patch.object(collector.ReadingResolver, "resolve", return_value={"reading": "要確認", "reading_status": "unconfirmed"}) as resolver:
             self.assertEqual(self.run_main(), 0)
             first = {call.args[0] for call in resolver.call_args_list}
+            self.assertEqual(len(first), 10)
             resolver.reset_mock()
+            self.rss = [source for row in rows.values() for source in row["sources"]]
+            self.assertEqual(self.run_main(), 0)
+            self.assertEqual(resolver.call_count, 0)
+            self.rss = []
             self.assertEqual(self.run_main(NOW + dt.timedelta(days=1)), 0)
             second = {call.args[0] for call in resolver.call_args_list}
-        self.assertEqual(len(first), 10)
         self.assertEqual(len(second), 10)
         self.assertTrue(first.isdisjoint(second))
+
+    def test_daily_adoption_limit_survives_reruns_and_rotates_next_day(self):
+        self.rss = [source for i in range(14) for source in evidence(f"新語テスト{i:02}")]
+        self.assertEqual(self.run_main(), 0)
+        self.assertEqual(len(self.published()), 10)
+        self.assertEqual(self.run_main(), 0)
+        self.assertEqual(len(self.published()), 10)
+        self.rss = []
+        self.assertEqual(self.run_main(NOW + dt.timedelta(days=1)), 0)
+        self.assertEqual(len(self.published()), 14)
+
+    def test_normalized_variants_do_not_overwrite_confirmed_data(self):
+        saved = candidate("Cloud Nova")
+        saved["manual_notes"] = "人手で確認したメモ"
+        data.save_entries(self.seed + [saved], self.directory)
+        self.rss = evidence("Ｃｌｏｕｄ　Ｎｏｖａ") + evidence("CLOUD NOVA")
+        self.assertEqual(self.run_main(), 0)
+        self.assertEqual(data.load_entries(self.directory), self.seed + [saved])
+
+    def test_rebuild_does_not_search_or_retry_or_change_any_data(self):
+        before = {path.name: path.read_bytes() for path in self.directory.glob("*.json*")}
+        with patch.object(collector, "google_news_rss", side_effect=AssertionError("No search in rebuild")):
+            self.assertEqual(self.run_main(mode="rebuild"), 0)
+        self.assertEqual(before, {path.name: path.read_bytes() for path in self.directory.glob("*.json*")})
+
+    def test_missing_or_corrupt_data_never_resets_to_seed(self):
+        path = self.directory / "entries-0001.jsonl"
+        path.write_text("corrupt", encoding="utf-8")
+        self.assertEqual(self.run_main(), 1)
+        self.assertEqual(path.read_text(), "corrupt")
+        path.unlink()
+        self.assertEqual(self.run_main(), 1)
+        self.assertFalse(path.exists())
+
+    def test_corrupt_daily_retry_history_is_not_overwritten(self):
+        self.pending_path.write_text('{"version":1,"rows":[]}', encoding="utf-8")
+        self.assertEqual(self.run_main(), 1)
+        self.assertEqual(json.loads(self.pending_path.read_text()), {"version": 1, "rows": []})
+
     def test_named_products_without_official_evidence_stay_pending(self):
         self.rss = evidence("クラウドノヴァ")
         for source in self.rss:
             source["title"] = source["source"] + '：新製品「クラウドノヴァ」を発表'
         with patch.object(collector, "require_official_name", return_value=[]):
             self.assertEqual(self.run_main(), 0)
-        self.assertFalse(self.github.issues)
-        self.assertIn("名称の公式根拠", next(iter(pipeline.load_pending(collector.PENDING_PATH, collector.normalize).values()))["pending_reason"])
+        self.assertFalse(self.published())
+        self.assertIn("名称の公式根拠", next(iter(self.pending().values()))["pending_reason"])
+
     def test_named_definition_cues_cannot_bypass_official_evidence(self):
         for title, word, kind in (
             ('新製品「クラウドノヴァ」とは', "クラウドノヴァ", "product"),
@@ -103,28 +123,22 @@ class CategoryPipelineTests(unittest.TestCase):
             ('名称「Ｃｌｏｕｄ　Ｎｏｖａ」とは', "Cloud Nova", "proper"),
             ('用語「ローカル推論」の意味', "ローカル推論", "common"),
         ):
-            with self.subTest(title=title):
-                self.assertEqual(pipeline.kind_for(title, word, "common"), kind)
-    def test_pending_retains_partial_or_single_source_evidence_and_manual_notes(self):
-        word = "再確認する語彙"
-        original = evidence(word)
-        row = {**candidate(word), "categories": ["technology"], "kind": "common", "manual_notes": "語義を確認する"}
-        pipeline.save_pending(collector.PENDING_PATH, {collector.normalize(word): row})
-        self.rss = original
+            self.assertEqual(pipeline.kind_for(title, word, "common"), kind)
+
+    def test_pending_preserves_partial_evidence_and_manual_notes(self):
+        row = {**candidate("再確認する語彙"), "manual_notes": "語義を確認する"}
+        self.queue({row["normalized"]: row})
+        self.rss = evidence(row["word"])
         with patch.object(collector, "verify_usage_sources", side_effect=lambda word, sources, readings: sources[:1]):
             self.assertEqual(self.run_main(), 0)
-        queued = pipeline.load_pending(collector.PENDING_PATH, collector.normalize)[collector.normalize(word)]
+        queued = self.pending()[row["normalized"]]
         self.assertEqual(len(queued["sources"]), 2)
-        self.assertEqual(queued["manual_notes"], "語義を確認する")
+        self.assertEqual(queued["manual_notes"], row["manual_notes"])
         self.assertIn("technology", queued["categories"])
-        self.rss = evidence("単独の語彙", publishers=1)
-        self.assertEqual(self.run_main(), 0)
-        queued = pipeline.load_pending(collector.PENDING_PATH, collector.normalize)["単独の語彙"]
-        self.assertEqual(len(queued["sources"]), 1)
+
     def test_backlog_uses_reserved_budget_before_new_articles(self):
-        word = "保留の名称"
-        row = {**candidate(word), "categories": ["technology"], "kind": "common"}
-        pipeline.save_pending(collector.PENDING_PATH, {collector.normalize(word): row})
+        row = candidate("保留の名称")
+        self.queue({row["normalized"]: row})
         self.rss = evidence("本日の名称")
         attempts = []
         def verify(word, sources, readings):
@@ -132,73 +146,73 @@ class CategoryPipelineTests(unittest.TestCase):
             return sources
         with patch.object(collector, "verify_usage_sources", side_effect=verify):
             self.assertEqual(self.run_main(), 0)
-        self.assertEqual(attempts[0], (word, 10))
+        self.assertEqual(attempts[0], (row["word"], 10))
         self.assertIn(("本日の名称", 20), attempts)
-    def test_urls_and_incomplete_names_are_rejected(self):
-        for word in ("https://example.com", "www.example.com", "未来の名称…", "Cloud Nova..."):
+
+    def test_invalid_phrases_urls_and_incomplete_names_are_rejected(self):
+        for word in ("https://example.com", "www.example.com", "未来の名称…", "Cloud Nova...",
+                     "普通のメガネに見えるスマートグラス", "未来を創る", "回避のすべはない"):
             self.assertIsNone(collector.clean_candidate(word))
-        self.assertEqual(collector.clean_candidate("Cloud Nova"), "Cloud Nova")
-    def test_hidden_mentions_are_not_official_naming_evidence(self):
+
+    def test_hidden_mentions_are_not_official_evidence(self):
         word = "クラウドノヴァ"
-        sources = [{**evidence(word)[0], "link": "https://sony.jp/product"}]
-        with patch.object(collector, "public_reading_document", return_value='<script>クラウドノヴァ</script><p>別の製品の発表</p>'):
-            self.assertEqual(pipeline.official_name(word, sources, collector.ReadingResolver(), SimpleNamespace(**vars(collector))), [])
-        with patch.object(collector, "public_reading_document", return_value='<h1>クラウドノヴァ</h1><p>公式の製品発表</p>'):
-            self.assertTrue(pipeline.official_name(word, sources, collector.ReadingResolver(), SimpleNamespace(**vars(collector))))
-    def test_later_reading_conflict_removes_previously_ready_candidate(self):
+        sources = [{"source": "Sony", "link": "https://sony.jp/name", "title": "発表"}]
+        with patch.object(collector, "public_reading_document", return_value='<script>クラウドノヴァ</script><p>別の製品</p>'):
+            self.assertEqual(pipeline.official_name(word, sources, collector.ReadingResolver(), collector), [])
+
+    def test_later_source_conflict_removes_previously_ready_candidate(self):
         word = "読み競合の語彙"
         recent = evidence(word)
-        older = article(word, "追加媒体", age=dt.timedelta(days=10))
+        older = article(word, "media3", age=dt.timedelta(days=10))
         def reading(word, sources):
             if len(sources) >= 3:
-                return {"reading": "要確認", "reading_status": "conflict", "reading_note": "出典間で読みが異なる"}
-            return {"reading": "よみきょうごうのごい", "reading_status": "confirmed", "reading_method": "source"}
+                return {"reading": "要確認", "reading_status": "conflict"}
+            return {"reading": "よみきょうごうのごい", "reading_status": "confirmed", "reading_method": "source", "reading_sources": sources}
         with patch.object(collector, "google_news_rss", side_effect=lambda query: recent if "when:1d" in query else recent + [older]), patch.object(collector.ReadingResolver, "resolve", side_effect=reading):
             self.assertEqual(self.run_main(), 0)
-        self.assertFalse(self.github.issues)
-        queued = pipeline.load_pending(collector.PENDING_PATH, collector.normalize)[word]
-        self.assertEqual(queued["reading_status"], "conflict")
-    def test_search_failure_saves_pending_without_publication(self):
-        self.rss = evidence("未確定の語彙")
+        self.assertFalse(self.published())
+        self.assertEqual(self.pending()[word]["reading_status"], "conflict")
+
+    def test_search_failure_persists_attempts_and_pending_without_adoption(self):
+        row = candidate("未確定の語彙")
+        self.queue({row["normalized"]: row})
         def feed(query):
             if "when:30d" in query:
                 raise RuntimeError("RSS unavailable")
-            return self.rss
+            return evidence(row["word"])
         with patch.object(collector, "google_news_rss", side_effect=feed), patch.object(collector.ReadingResolver, "resolve", return_value={"reading": "要確認", "reading_status": "unconfirmed"}):
             self.assertEqual(self.run_main(), 1)
-        self.assertFalse(self.github.issues)
-        self.assertIn("未確定の語彙", pipeline.load_pending(collector.PENDING_PATH, collector.normalize))
+        self.assertFalse(self.published())
+        self.assertIn(row["normalized"], self.pending())
+        self.assertEqual(json.loads(self.pending_path.read_text())["retry_state"]["terms"], [row["normalized"]])
+
     def test_syndicated_headlines_and_agency_reposts_count_once(self):
-        context = SimpleNamespace(**vars(collector))
         first, second = evidence("ニュース語")
         second["title"] = first["title"]
-        self.assertEqual(pipeline.independent_sources([first, second], context), [])
+        self.assertEqual(pipeline.independent_sources([first, second], collector), [])
         second["title"] += "続報"
         first["description"] = second["description"] = "共同通信配信"
-        self.assertEqual(pipeline.independent_sources([first, second], context), [])
-    def test_identical_body_reposts_and_unavailable_pages_are_not_two_usages(self):
+        self.assertEqual(pipeline.independent_sources([first, second], collector), [])
+
+    def test_identical_bodies_unavailable_pages_and_agency_credits_are_not_independent(self):
         sources = evidence("語彙テスト")
-        for number, source in enumerate(sources):
-            source["link"] = f"https://publisher{number}.example/article"
-        resolver = collector.ReadingResolver()
-        markup = '<p>語彙テスト（ゴイテスト）の日本語使用例です。</p>'
-        with patch.object(collector, "public_reading_document", return_value=markup):
-            result = pipeline.verified_usage("語彙テスト", sources, resolver, SimpleNamespace(**vars(collector)))
-        self.assertEqual(len(result), 1)
+        for page in (lambda link: '<p>語彙テスト（ゴイテスト）を解説。</p>',
+                     lambda link: '<p>語彙テストを紹介。共同通信配信。</p><footer>' + link + '</footer>'):
+            with patch.object(collector, "public_reading_document", side_effect=page):
+                self.assertEqual(len(pipeline.verified_usage("語彙テスト", sources, collector.ReadingResolver(), collector)), 1)
         with patch.object(collector, "public_reading_document", side_effect=ValueError("unavailable")):
-            self.assertEqual(pipeline.verified_usage("別語", evidence("別語"), collector.ReadingResolver(), SimpleNamespace(**vars(collector))), [])
-    def test_agency_credit_in_different_page_bodies_counts_once(self):
-        sources = evidence("語彙テスト")
-        for number, source in enumerate(sources):
-            source["link"] = f"https://publisher{number}.example/article"
-        def page(link):
-            return '<p>語彙テストを紹介する日本語記事。共同通信配信。</p><footer>' + link + '</footer>'
-        with patch.object(collector, "public_reading_document", side_effect=page):
-            result = pipeline.verified_usage("語彙テスト", sources, collector.ReadingResolver(), SimpleNamespace(**vars(collector)))
-        self.assertEqual(len(result), 1)
-    def test_page_budget_is_shared_by_usage_and_reading_verification(self):
+            self.assertEqual(pipeline.verified_usage("語彙テスト", sources, collector.ReadingResolver(), collector), [])
+
+    def test_page_budget_is_shared_by_usage_and_reading_checks(self):
         resolver = collector.ReadingResolver(page_limit=1)
-        with patch.object(collector, "public_reading_document", return_value='<p>語彙テスト（ゴイテスト）を解説します。</p>') as fetch:
-            self.assertEqual(len(pipeline.verified_usage("語彙テスト", evidence("語彙テスト"), resolver, SimpleNamespace(**vars(collector)))), 1)
+        with patch.object(collector, "public_reading_document", return_value='<p>語彙テスト（ゴイテスト）を解説。</p>') as fetch:
+            self.assertEqual(len(pipeline.verified_usage("語彙テスト", evidence("語彙テスト"), resolver, collector)), 1)
             self.assertEqual(fetch.call_count, 1)
             self.assertEqual(resolver.page_count, 1)
+
+    def test_toronto_dates_are_used_across_dst(self):
+        for instant, date in (("2026-03-09T00:00:00+00:00", "2026-03-08"), ("2026-11-02T00:00:00+00:00", "2026-11-01")):
+            now = dt.datetime.fromisoformat(instant)
+            self.rss = evidence("時差の語" + date, now=now)
+            self.assertEqual(self.run_main(now), 0)
+            self.assertEqual(self.published()[-1]["accepted_date"], date)

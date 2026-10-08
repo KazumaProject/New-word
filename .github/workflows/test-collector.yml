@@ -1,4 +1,4 @@
-name: Test categorized IME collector
+name: Test Issue and Release collectors
 on:
   pull_request:
   push:
