@@ -2,7 +2,7 @@ name: Test Issue and Release collectors
 on:
   pull_request:
   push:
-    branches: ['codex/collect-missing-ime-words']
+    branches: ['codex/collect-missing-ime-words', 'codex/verify-release-dictionary']
 permissions:
   contents: read
 jobs:
@@ -13,5 +13,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
       - run: python -m pip install -r requirements.txt
       - run: python -B -m unittest discover -s tests -v
+      - name: Verify the real pinned dictionaries and archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DICTIONARY_INDEX_PATH: ${{ runner.temp }}/new-word-dictionary.sqlite
+        run: |
+          python scripts/dictionary_assets.py --output "$DICTIONARY_INDEX_PATH"
+          python scripts/collect_release_words.py --mode rebuild
+          git diff --exit-code -- data/release
+          python scripts/release_archive.py

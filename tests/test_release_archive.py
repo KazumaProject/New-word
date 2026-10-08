@@ -6,7 +6,7 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from release_support import collector, data, candidate, reviewed_seed
+from release_support import collector, data, candidate, reviewed_seed, REGISTERED_SEED_WORDS
 
 COMMIT = "a" * 40
 STAMP = "2026-10-08T23:00:00Z"
@@ -32,13 +32,13 @@ class ArchiveTests(unittest.TestCase):
             for name, raw in payloads.items():
                 archive.writestr(name, raw)
 
-    def test_initial_ten_match_reviewed_seed_and_export_only_three_fields(self):
+    def test_four_unregistered_seed_words_export_only_three_fields(self):
         seed = json.loads((data.ROOT / "data/lists/2026-10-07.json").read_text(encoding="utf-8"))
         self.assertEqual([(row["reading"], row["word"], row["pos"]) for row in self.rows],
-                         [(row["reading"], row["word"], row["pos"]) for row in seed["rows"]])
+                         [(row["reading"], row["word"], row["pos"]) for row in seed["rows"] if row["word"] not in REGISTERED_SEED_WORDS])
         manifest = self.build()
-        self.assertEqual(manifest["word_count"], 10)
-        self.assertEqual(len(manifest["category_counts"]), 9)
+        self.assertEqual(manifest["word_count"], 4)
+        self.assertEqual(set(manifest["category_counts"]), {tag for row in self.rows for tag in row["categories"]})
         with zipfile.ZipFile(self.output) as archive:
             self.assertEqual(set(archive.namelist()), {"dictionary-0001.tsv", "metadata-0001.jsonl", "manifest.json"})
             raw = archive.read("dictionary-0001.tsv")
@@ -46,7 +46,7 @@ class ArchiveTests(unittest.TestCase):
             self.assertNotIn(b"http", raw)
             self.assertNotIn(b"\r", raw)
             lines = raw.decode("utf-8").splitlines()
-            self.assertEqual(len(lines), 10)
+            self.assertEqual(len(lines), 4)
             self.assertEqual([line.split("\t") for line in lines], [[row[field] for field in data.COLUMNS] for row in self.rows])
             metadata = [json.loads(line) for line in archive.read("metadata-0001.jsonl").splitlines()]
             self.assertEqual(metadata, self.rows)
@@ -96,7 +96,7 @@ class ArchiveTests(unittest.TestCase):
     def test_valid_checksums_cannot_hide_disagreement_with_metadata(self):
         manifest = self.build()
         with zipfile.ZipFile(self.output) as archive:
-            raw = archive.read("dictionary-0001.tsv").replace("グリークヨーグルト".encode(), "別の語彙".encode())
+            raw = archive.read("dictionary-0001.tsv").replace(self.rows[0]["word"].encode(), "別の語彙".encode())
         entry = manifest["files"][0]
         entry.update(bytes=len(raw), sha256=data.sha256(raw))
         manifest["data_sha256"] = data.content_digest(manifest)
@@ -135,6 +135,25 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "POS"):
             self.build([{**row, "pos": collector.pos_label(row["word"], "common")}])
 
+    def test_unchecked_and_registered_rows_cannot_be_distributed(self):
+        row = candidate("試験語彙")
+        for check in ({"status": "not_checked"}, {**row["dictionary_check"], "status": "present"}):
+            with self.subTest(check=check), self.assertRaises(ValueError):
+                self.build([{**row, "dictionary_check": check}])
+
+    def test_live_index_rejects_falsely_marked_missing_word(self):
+        from release_support import FakeDictionary
+        self.build([candidate("東京")])
+        with self.assertRaisesRegex(ValueError, "present"):
+            data.validate_archive(self.output, dictionary=FakeDictionary(["東京"]))
+
+    def test_empty_export_after_registered_words_are_filtered_is_valid(self):
+        manifest = self.build([])
+        self.assertEqual(manifest["word_count"], 0)
+        with zipfile.ZipFile(self.output) as archive:
+            self.assertEqual(archive.read("dictionary-0001.tsv"), b"")
+            self.assertEqual(archive.read("metadata-0001.jsonl"), b"")
+
     def test_manual_notes_and_all_category_tags_survive_canonical_roundtrip(self):
         row = candidate("試験語彙", categories=["life_food", "technology"])
         row["manual_notes"] = "手動メモ\n次回確認"
@@ -157,7 +176,7 @@ class ArchiveTests(unittest.TestCase):
         data.save_entries(rows, directory)
         loaded = data.load_entries(directory)
         self.build(loaded)
-        self.assertEqual(data.validate_archive(self.output)["word_count"], 25)
+        self.assertEqual(data.validate_archive(self.output)["word_count"], len(rows))
 
     def test_reading_annotations_ruby_conflicts_and_estimates(self):
         self.assertEqual(collector.extract_readings("試験語彙", "<ruby>試験語彙<rt>しけんごい</rt></ruby>"), {"しけんごい"})

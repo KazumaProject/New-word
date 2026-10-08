@@ -28,6 +28,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GITHUB_REPOSITORY: ${{ github.repository }}
       COLLECTION_MODE: ${{ inputs.mode || 'collect' }}
+      DICTIONARY_INDEX_PATH: .cache/dictionary.sqlite
     steps:
       - uses: actions/checkout@v4
         with:
@@ -36,12 +37,18 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
       - name: Install reading estimator
         run: python -m pip install -r requirements.txt
       - name: Test collectors and archive
         run: python -B -m unittest discover -s tests -v
       - name: Check mutable Release
         run: python scripts/publish_word_release.py --check
+      - name: Download and verify all 13 dictionary packs
+        run: python scripts/dictionary_assets.py --output "$DICTIONARY_INDEX_PATH"
       - name: Collect Release candidates
         id: collect
         run: python scripts/collect_release_words.py --mode "$COLLECTION_MODE"

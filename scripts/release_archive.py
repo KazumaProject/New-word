@@ -13,6 +13,7 @@ import tempfile
 import zipfile
 
 import release_candidates as news
+import dictionary_assets as dictionaries
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data/release"
@@ -80,8 +81,7 @@ def validate_row(row, categories):
         raise ValueError("Estimated or unknown reading method")
     if row["kind"] != "common" and not source_list(row.get("official_name_sources")):
         raise ValueError("Named entities require official naming evidence")
-    if row.get("dictionary_check") != {"status": "not_checked"}:
-        raise ValueError("Dictionary membership must be explicitly not_checked")
+    dictionaries.validate_check(row.get("dictionary_check"), allow_unchecked=True)
     for field in ("accepted_date", "checked_at"):
         if not isinstance(row.get(field), str) or dt.date.fromisoformat(row[field]).isoformat() != row[field]:
             raise ValueError(f"Invalid {field}")
@@ -177,8 +177,12 @@ def content_digest(manifest):
 def build_archive(rows, output, *, source_commit, updated_at, categories=None, part_bytes=PART_BYTES, zip_bytes=ZIP_BYTES):
     categories = news.CATEGORIES if categories is None else categories
     validate_rows(rows, categories)
-    if not rows or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", source_commit):
-        raise ValueError("A nonempty list and its Git source commit are required")
+    for row in rows:
+        dictionaries.validate_check(row.get("dictionary_check"))
+        if row["dictionary_check"]["status"] != "missing":
+            raise ValueError("Only words absent from all dictionary packs may be distributed")
+    if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", source_commit):
+        raise ValueError("The Git source commit is required")
     timestamp = dt.datetime.fromisoformat(updated_at.replace("Z", "+00:00"))
     if timestamp.utcoffset() != dt.timedelta(0):
         raise ValueError("Manifest timestamp must be UTC")
@@ -189,7 +193,7 @@ def build_archive(rows, output, *, source_commit, updated_at, categories=None, p
         "categories": [{"id": item["id"], "label": item["label"]} for item in categories],
         "word_count": len(rows), "category_counts": dict(Counter(tag for row in rows for tag in row["categories"])),
         "primary_category_counts": dict(Counter(row["category"] for row in rows)),
-        "dictionary_check": {"status": "not_checked"}, "part_bytes": part_bytes, "files": [],
+        "dictionary_check": {**dictionaries.provenance(), "status": "verified"}, "part_bytes": part_bytes, "files": [],
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -199,7 +203,8 @@ def build_archive(rows, output, *, source_commit, updated_at, categories=None, p
                 info.create_system = 3
                 info.external_attr = 0o100644 << 16
                 archive.writestr(info, raw, compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
-            for index, dictionary, metadata, count in parts(rows, part_bytes=part_bytes):
+            payloads = parts(rows, part_bytes=part_bytes) if rows else [(1, b"", b"", 0)]
+            for index, dictionary, metadata, count in payloads:
                 for kind, extension, raw in (("dictionary", "tsv", dictionary), ("metadata", "jsonl", metadata)):
                     name = f"{kind}-{index:04}.{extension}"
                     member(name, raw)
@@ -216,7 +221,7 @@ def build_archive(rows, output, *, source_commit, updated_at, categories=None, p
     return manifest
 
 
-def validate_archive(path, *, zip_bytes=ZIP_BYTES):
+def validate_archive(path, *, zip_bytes=ZIP_BYTES, dictionary=None):
     if path.stat().st_size >= zip_bytes:
         raise ValueError("Release ZIP must be smaller than 2 GiB")
     with zipfile.ZipFile(path) as archive:
@@ -252,27 +257,32 @@ def validate_archive(path, *, zip_bytes=ZIP_BYTES):
                 if size > manifest["part_bytes"] or size != entry["bytes"] or digest.hexdigest() != entry["sha256"]:
                     raise ValueError("Part integrity or size check failed")
             count = 0
-            with archive.open(pair[0]["name"]) as dictionary, archive.open(pair[1]["name"]) as metadata:
+            with archive.open(pair[0]["name"]) as dictionary_stream, archive.open(pair[1]["name"]) as metadata:
                 for raw in metadata:
                     if not raw.endswith(b"\n") or raw.endswith(b"\r\n"):
                         raise ValueError("Metadata requires LF-terminated records")
                     row = json.loads(raw.decode("utf-8"))
                     key = validate_row(row, manifest["categories"])
+                    dictionaries.validate_check(row.get("dictionary_check"))
+                    if row["dictionary_check"]["status"] != "missing":
+                        raise ValueError("Registered or unchecked words cannot be distributed")
+                    if dictionary is not None and dictionary.contains(row["word"]):
+                        raise ValueError("Distributed word is present in the decoded dictionary outputs")
                     if key in seen:
                         raise ValueError("Duplicate word across parts")
                     seen.add(key)
                     expected_line = ("\t".join(row[field] for field in COLUMNS) + "\n").encode("utf-8")
-                    if dictionary.readline() != expected_line:
+                    if dictionary_stream.readline() != expected_line:
                         raise ValueError("Dictionary output disagrees with metadata")
                     count += 1
                     counts.update(row["categories"])
                     primary.update([row["category"]])
-                if dictionary.read(1) or any(item["rows"] != count for item in pair):
+                if dictionary_stream.read(1) or any(item["rows"] != count for item in pair):
                     raise ValueError("Dictionary and metadata row counts disagree")
             rows += count
         if (rows != manifest["word_count"] or dict(counts) != manifest["category_counts"]
                 or dict(primary) != manifest["primary_category_counts"]
-                or manifest["dictionary_check"] != {"status": "not_checked"}
+                or manifest["dictionary_check"] != {**dictionaries.provenance(), "status": "verified"}
                 or manifest["data_sha256"] != content_digest(manifest)):
             raise ValueError("Manifest disagrees with archive data")
     return manifest
@@ -282,6 +292,7 @@ def data_revision():
     raw = subprocess.check_output([
         "git", "log", "-1", "--format=%H%x09%cI", "--", "data/release/entries-*.jsonl",
         "data/categories.json", "scripts/release_archive.py",
+        "data/dictionary-release.json", "scripts/dictionary_assets.py", "scripts/DecodeDictionary.java",
     ], cwd=ROOT, text=True).strip()
     commit, timestamp = raw.split("\t")
     utc = dt.datetime.fromisoformat(timestamp).astimezone(dt.timezone.utc).isoformat().replace("+00:00", "Z")
@@ -293,7 +304,14 @@ def main():
     parser.add_argument("--output", type=Path, default=ROOT / "dist/new-words.zip")
     args = parser.parse_args()
     commit, timestamp = data_revision()
-    manifest = build_archive(load_entries(), args.output, source_commit=commit, updated_at=timestamp)
+    with dictionaries.DictionaryIndex.from_environment() as index:
+        rows = load_entries()
+        for row in rows:
+            dictionaries.validate_check(row.get("dictionary_check"))
+            if index.contains(row["word"]) != (row["dictionary_check"]["status"] == "present"):
+                raise ValueError("Saved dictionary verification disagrees with the decoded outputs")
+        rows = [row for row in rows if row["dictionary_check"]["status"] == "missing"]
+        manifest = build_archive(rows, args.output, source_commit=commit, updated_at=timestamp)
     print(f"Validated {manifest['word_count']} words: {args.output}")
 
 

@@ -16,15 +16,39 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 import release_candidates as collector
 import release_archive as data
 import collect_release_words as release
+import dictionary_assets as dictionaries
 
 NOW = dt.datetime(2026, 10, 8, 19, tzinfo=collector.TZ)
+REGISTERED_SEED_WORDS = {"グリークヨーグルト", "スポットワーク", "モキュメンタリー", "モフリン", "チームみらい", "ぬい活"}
+
+
+class FakeDictionary:
+    def __init__(self, words=()):
+        self.words = {collector.normalize(word) for word in words}
+        self.document = {"provenance": dictionaries.provenance()}
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def contains(self, word):
+        return collector.normalize(word) in self.words
+
+    def check(self, word, day):
+        return {**self.document["provenance"], "checked_at": day,
+                "status": "present" if self.contains(word) else "missing"}
 
 
 def reviewed_seed():
     # The checked-in ledger grows daily. Fixtures must remain independent of
     # its current word count so scheduled tests keep passing after collection.
     document = json.loads((data.ROOT / "data/lists/2026-10-07.json").read_text(encoding="utf-8"))
-    return [release.confirmed_row(row, row["date"]) for row in document["rows"]]
+    rows = [release.confirmed_row(row, row["date"]) for row in document["rows"] if row["word"] not in REGISTERED_SEED_WORDS]
+    for row in rows:
+        row["dictionary_check"] = FakeDictionary().check(row["word"], row["date"])
+    return rows
 
 
 def article(word, publisher, age=dt.timedelta(hours=1), link=None, now=NOW):
@@ -45,7 +69,7 @@ def candidate(word, date="2026-10-07", *, kind="common", categories=None):
             "reading_method": "source", "reading_sources": evidence(word), "reading_note": "",
             "usage_status": "confirmed", "sources": evidence(word), "kind": kind,
             "pos": collector.pos_label(word, kind), "categories": tags, "category": tags[0],
-            "dictionary_check": {"status": "not_checked"},
+            "dictionary_check": FakeDictionary().check(word, date),
             "official_name_sources": [] if kind == "common" else [{"source": "公式", "link": "https://official.example/name"}]}
 
 
@@ -59,8 +83,10 @@ class NewsFixture(unittest.TestCase):
         data.save_entries(self.seed, self.directory)
         self.queue({})
         self.rss = []
+        self.dictionary = FakeDictionary()
         self.output = io.StringIO()
         for patcher in (
+            patch.object(dictionaries.DictionaryIndex, "from_environment", return_value=self.dictionary),
             patch.object(collector, "google_news_rss", side_effect=lambda query: self.rss),
             patch.object(collector, "verify_usage_sources", side_effect=lambda word, sources, readings: sources),
             patch.object(collector, "require_official_name", return_value=[{"source": "公式", "link": "https://official.example/name"}]),
