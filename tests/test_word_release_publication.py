@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from release_support import data, collector, candidate
+from release_support import data, collector, candidate, reviewed_seed
 from test_release_archive import COMMIT, STAMP
 import publish_word_release as publisher
 
@@ -80,7 +80,7 @@ class PublicationTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
         self.output = self.directory / publisher.ASSET
-        self.rows = data.load_entries()
+        self.rows = reviewed_seed()
         self.client = FakeRelease()
         self.build()
         manager = contextlib.redirect_stdout(io.StringIO())

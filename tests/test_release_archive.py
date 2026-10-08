@@ -6,7 +6,7 @@ import unittest
 import zipfile
 from unittest.mock import patch
 
-from release_support import collector, data, candidate
+from release_support import collector, data, candidate, reviewed_seed
 
 COMMIT = "a" * 40
 STAMP = "2026-10-08T23:00:00Z"
@@ -18,7 +18,7 @@ class ArchiveTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name)
         self.output = self.directory / "new-words.zip"
-        self.rows = data.load_entries()
+        self.rows = reviewed_seed()
 
     def build(self, rows=None, **options):
         return data.build_archive(self.rows if rows is None else rows, self.output,
@@ -150,6 +150,14 @@ class ArchiveTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             data.save_entries(self.rows + [self.rows[0]], directory)
         self.assertEqual((directory / "entries-0001.jsonl").read_bytes(), before)
+
+    def test_cumulative_ledger_with_more_than_ten_words_remains_buildable(self):
+        directory = self.directory / "canonical"
+        rows = self.rows + [candidate(f"追加の語彙{i:02}") for i in range(15)]
+        data.save_entries(rows, directory)
+        loaded = data.load_entries(directory)
+        self.build(loaded)
+        self.assertEqual(data.validate_archive(self.output)["word_count"], 25)
 
     def test_reading_annotations_ruby_conflicts_and_estimates(self):
         self.assertEqual(collector.extract_readings("試験語彙", "<ruby>試験語彙<rt>しけんごい</rt></ruby>"), {"しけんごい"})

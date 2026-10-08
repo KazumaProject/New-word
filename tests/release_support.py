@@ -3,6 +3,7 @@ import copy
 import datetime as dt
 import email.utils
 import io
+import json
 import os
 from pathlib import Path
 import sys
@@ -17,6 +18,13 @@ import release_archive as data
 import collect_release_words as release
 
 NOW = dt.datetime(2026, 10, 8, 19, tzinfo=collector.TZ)
+
+
+def reviewed_seed():
+    # The checked-in ledger grows daily. Fixtures must remain independent of
+    # its current word count so scheduled tests keep passing after collection.
+    document = json.loads((data.ROOT / "data/lists/2026-10-07.json").read_text(encoding="utf-8"))
+    return [release.confirmed_row(row, row["date"]) for row in document["rows"]]
 
 
 def article(word, publisher, age=dt.timedelta(hours=1), link=None, now=NOW):
