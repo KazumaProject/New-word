@@ -1,0 +1,97 @@
+[
+  {
+    "id": "jmdict",
+    "adapter": "jmdict",
+    "url": "https://www.edrdg.org/pub/Nihongo/JMdict_e.gz",
+    "categories": [
+      "life_food"
+    ],
+    "evidence_policy": "curated_reference",
+    "publisher": "EDRDG JMdict",
+    "attribution": "Copyright EDRDG / Jim Breen; CC BY-SA 4.0",
+    "documentation": "https://www.edrdg.org/jmdict/j_jmdict.html"
+  },
+  {
+    "id": "jmnedict",
+    "adapter": "jmnedict",
+    "url": "https://www.edrdg.org/pub/Nihongo/JMnedict.xml.gz",
+    "categories": [
+      "people_organizations"
+    ],
+    "evidence_policy": "curated_reference",
+    "publisher": "EDRDG JMnedict",
+    "attribution": "Copyright EDRDG / Jim Breen; CC BY-SA 4.0",
+    "documentation": "https://www.edrdg.org/enamdict/enamdict_doc.html"
+  },
+  {
+    "id": "tsumura",
+    "adapter": "tsumura",
+    "url": "https://www.tsumura.co.jp/products/json/id.json",
+    "categories": [
+      "kampo",
+      "medicine"
+    ],
+    "evidence_policy": "authoritative",
+    "publisher": "株式会社ツムラ",
+    "attribution": "Public product names and explicit readings; source links retained"
+  },
+  {
+    "id": "ipa",
+    "adapter": "catalog",
+    "url": "https://dx.ipa.go.jp/dx-glossary-all",
+    "path_pattern": "^/dx-glossary-all$",
+    "categories": [
+      "technology",
+      "software_engineering",
+      "business"
+    ],
+    "evidence_policy": "authoritative",
+    "publisher": "情報処理推進機構 IPA",
+    "attribution": "Terminology and explicit readings only; source links retained",
+    "heading_tags": [
+      "h3"
+    ]
+  },
+  {
+    "id": "mdn",
+    "adapter": "catalog",
+    "url": "https://developer.mozilla.org/ja/docs/Glossary",
+    "path_pattern": "^/ja/docs/Glossary(?:/[^/#?]+)?$",
+    "categories": [
+      "technology",
+      "software_engineering"
+    ],
+    "evidence_policy": "authoritative",
+    "publisher": "MDN contributors",
+    "attribution": "MDN documentation CC BY-SA 2.5; terminology and explicit readings only",
+    "documentation": "https://developer.mozilla.org/en-US/docs/MDN/Writing_guidelines/Attrib_copyright_license",
+    "heading_tags": [
+      "h1"
+    ]
+  },
+  {
+    "id": "pmda",
+    "adapter": "discovery",
+    "url": "https://www.pmda.go.jp/PmdaSearch/iyakuSearch/",
+    "query": "site:pmda.go.jp/PmdaSearch/iyakuDetail 医薬品 名称",
+    "official_hosts": [
+      "www.pmda.go.jp"
+    ],
+    "categories": [
+      "medicine",
+      "science_health"
+    ],
+    "evidence_policy": "authoritative",
+    "publisher": "医薬品医療機器総合機構 PMDA",
+    "attribution": "Public medicine names and explicit readings; source links retained"
+  },
+  {
+    "id": "category_discovery",
+    "adapter": "category_discovery",
+    "url": "https://news.google.com/rss/search",
+    "categories": [],
+    "evidence_policy": "discovery",
+    "publisher": "Independent Japanese publishers",
+    "attribution": "Source links retained; article text is not redistributed"
+  }
+]

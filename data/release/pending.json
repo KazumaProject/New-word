@@ -1,8 +1,12 @@
 {
+  "legacy_retry_history": {
+    "date": "",
+    "terms": []
+  },
   "retry_state": {
     "date": "",
     "terms": []
   },
   "rows": [],
-  "version": 1
+  "version": 2
 }

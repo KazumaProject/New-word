@@ -44,7 +44,7 @@ class CategoryPipelineTests(NewsFixture):
         with patch.object(collector, "google_news_rss", side_effect=AssertionError("No news in rebuild")):
             self.assertEqual(self.run_main(mode="rebuild"), 0)
         saved = data.load_entries(self.directory)[0]
-        self.assertEqual(saved, {**row, "dictionary_check": self.dictionary.check(row["word"], NOW.date().isoformat())})
+        self.assertEqual(saved, {**row, "dictionary_check": self.dictionary.check(row["word"], NOW.date().isoformat()), "metadata_version": 2, "evidence_type": "legacy_discovery"})
 
     def test_unavailable_dictionary_stops_even_rebuild_without_writing_data(self):
         before = {path.name: path.read_bytes() for path in self.directory.glob("*.json*")}
@@ -86,7 +86,7 @@ class CategoryPipelineTests(NewsFixture):
         self.assertEqual(self.run_main(), 0)
         self.assertEqual(len(self.published()), 1)
         self.assertEqual(self.published()[0]["category"], "life_food")
-        self.assertEqual(len(self.published()[0]["categories"]), 9)
+        self.assertEqual(len(self.published()[0]["categories"]), 12)
 
     def test_round_robin_selects_across_categories(self):
         categories = [{"id": "one"}, {"id": "two"}, {"id": "three"}]
@@ -100,44 +100,41 @@ class CategoryPipelineTests(NewsFixture):
         self.assertEqual(self.published()[0]["manual_notes"], row["manual_notes"])
         self.assertFalse(self.pending())
 
-    def test_pending_daily_budget_survives_reruns_and_feed_discovery(self):
+    def test_pending_retries_have_no_daily_quota(self):
         rows = {f"name{i}": candidate(f"Name{i}") for i in range(25)}
         self.queue(rows)
         with patch.object(collector.ReadingResolver, "resolve", return_value={"reading": "要確認", "reading_status": "unconfirmed"}) as resolver:
             self.assertEqual(self.run_main(), 0)
-            first = {call.args[0] for call in resolver.call_args_list}
-            self.assertEqual(len(first), 10)
+            self.assertEqual({call.args[0] for call in resolver.call_args_list}, {row["word"] for row in rows.values()})
             resolver.reset_mock()
-            self.rss = [source for row in rows.values() for source in row["sources"]]
             self.assertEqual(self.run_main(), 0)
-            self.assertEqual(resolver.call_count, 0)
-            self.rss = []
-            self.assertEqual(self.run_main(NOW + dt.timedelta(days=1)), 0)
-            second = {call.args[0] for call in resolver.call_args_list}
-        self.assertEqual(len(second), 10)
-        self.assertTrue(first.isdisjoint(second))
+            self.assertEqual(resolver.call_count, 25)
+        self.assertEqual(len(self.pending()), 25)
 
-    def test_daily_adoption_limit_survives_reruns_and_rotates_next_day(self):
-        self.rss = [source for i in range(14) for source in evidence(f"新語テスト{i:02}")]
+    def test_collection_adopts_more_than_ten_and_reruns_deduplicate(self):
+        self.rss = [source for i in range(35) for source in evidence(f"新語テスト{i:02}")]
         self.assertEqual(self.run_main(), 0)
-        self.assertEqual(len(self.published()), 10)
+        self.assertEqual(len(self.published()), 35)
         self.assertEqual(self.run_main(), 0)
-        self.assertEqual(len(self.published()), 10)
-        self.rss = []
-        self.assertEqual(self.run_main(NOW + dt.timedelta(days=1)), 0)
-        self.assertEqual(len(self.published()), 14)
+        self.assertEqual(len(self.published()), 35)
 
-    def test_normalized_variants_do_not_overwrite_confirmed_data(self):
+    def test_normalized_variants_preserve_verified_reading_and_manual_notes(self):
         saved = candidate("Cloud Nova")
         saved["manual_notes"] = "人手で確認したメモ"
         data.save_entries(self.seed + [saved], self.directory)
         self.rss = evidence("Ｃｌｏｕｄ　Ｎｏｖａ") + evidence("CLOUD NOVA")
         self.assertEqual(self.run_main(), 0)
-        self.assertEqual(data.load_entries(self.directory), self.seed + [saved])
+        loaded = data.load_entries(self.directory)
+        self.assertEqual(len(loaded), 2)
+        row = loaded[1]
+        for field in ("word", "reading", "reading_status", "accepted_date", "manual_notes"):
+            self.assertEqual(row[field], saved[field])
+        self.assertEqual(len(row["categories"]), 12)
 
-    def test_rebuild_does_not_search_or_retry_or_change_any_data(self):
-        before = {path.name: path.read_bytes() for path in self.directory.glob("*.json*")}
+    def test_rebuild_only_migrates_metadata_and_is_idempotent(self):
         with patch.object(collector, "google_news_rss", side_effect=AssertionError("No search in rebuild")):
+            self.assertEqual(self.run_main(mode="rebuild"), 0)
+            before = {path.name: path.read_bytes() for path in self.directory.glob("*.json*")}
             self.assertEqual(self.run_main(mode="rebuild"), 0)
         self.assertEqual(before, {path.name: path.read_bytes() for path in self.directory.glob("*.json*")})
 
@@ -195,8 +192,8 @@ class CategoryPipelineTests(NewsFixture):
             return sources
         with patch.object(collector, "verify_usage_sources", side_effect=verify):
             self.assertEqual(self.run_main(), 0)
-        self.assertEqual(attempts[0], (row["word"], 10))
-        self.assertIn(("本日の名称", 20), attempts)
+        self.assertEqual(attempts[0], (row["word"], None))
+        self.assertIn(("本日の名称", None), attempts)
 
     def test_invalid_phrases_urls_and_incomplete_names_are_rejected(self):
         for word in ("https://example.com", "www.example.com", "未来の名称…", "Cloud Nova...",
@@ -212,28 +209,26 @@ class CategoryPipelineTests(NewsFixture):
     def test_later_source_conflict_removes_previously_ready_candidate(self):
         word = "読み競合の語彙"
         recent = evidence(word)
-        older = article(word, "media3", age=dt.timedelta(days=10))
+        older = article(word, "media3", age=dt.timedelta(days=1000))
         def reading(word, sources):
             if len(sources) >= 3:
                 return {"reading": "要確認", "reading_status": "conflict"}
             return {"reading": "よみきょうごうのごい", "reading_status": "confirmed", "reading_method": "source", "reading_sources": sources}
-        with patch.object(collector, "google_news_rss", side_effect=lambda query: recent if "when:1d" in query else recent + [older]), patch.object(collector.ReadingResolver, "resolve", side_effect=reading):
+        with patch.object(collector, "google_news_rss", return_value=recent + [older]), patch.object(collector.ReadingResolver, "resolve", side_effect=reading):
             self.assertEqual(self.run_main(), 0)
         self.assertFalse(self.published())
         self.assertEqual(self.pending()[word]["reading_status"], "conflict")
 
-    def test_search_failure_persists_attempts_and_pending_without_adoption(self):
+    def test_search_failure_persists_pending_and_reports_incomplete_coverage(self):
         row = candidate("未確定の語彙")
         self.queue({row["normalized"]: row})
-        def feed(query):
-            if "when:30d" in query:
-                raise RuntimeError("RSS unavailable")
-            return evidence(row["word"])
-        with patch.object(collector, "google_news_rss", side_effect=feed), patch.object(collector.ReadingResolver, "resolve", return_value={"reading": "要確認", "reading_status": "unconfirmed"}):
-            self.assertEqual(self.run_main(), 1)
+        with patch.object(collector, "google_news_rss", side_effect=RuntimeError("RSS unavailable")), patch.object(collector.ReadingResolver, "resolve", return_value={"reading": "要確認", "reading_status": "unconfirmed"}):
+            self.assertEqual(self.run_main(), 0)
         self.assertFalse(self.published())
         self.assertIn(row["normalized"], self.pending())
-        self.assertEqual(json.loads(self.pending_path.read_text())["retry_state"]["terms"], [row["normalized"]])
+        state = json.loads((self.directory / "collection-state.json").read_text())
+        self.assertFalse(state["complete"])
+        self.assertEqual(state["sources"]["category_discovery"]["status"], "failed")
 
     def test_syndicated_headlines_and_agency_reposts_count_once(self):
         first, second = evidence("ニュース語")

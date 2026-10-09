@@ -49,7 +49,8 @@ def candidate(word, date="2026-10-02", supplement=False):
 
 
 def issue(number, rows, extra=""):
-    title = f"新語候補 {rows[0]['date']}"
+    date = dt.date.fromisoformat(rows[0]["date"])
+    title = f"週間新語候補 {date - dt.timedelta(days=date.weekday())}" if date == NOW.date() else f"新語候補 {date}"
     return {
         "number": number, "title": title,
         "body": collector.render_issue(title, rows) + extra,
@@ -132,11 +133,25 @@ class CollectorTests(unittest.TestCase):
     def test_delayed_start_posts_then_saves_seen(self):
         self.rss = evidence("クラウドノヴァ")
         self.assertEqual(self.run_main(), 0)
-        self.assertEqual(self.github.issues[0]["title"], "新語候補 2026-10-02")
+        self.assertEqual(self.github.issues[0]["title"], "週間新語候補 2026-09-28")
         self.assertEqual(collector.load_seen(), {"クラウドノヴァ"})
         self.assertFalse(self.published()[0]["supplement"])
         self.assertIn("掲載: 1語", self.summary.read_text())
         self.assertNotIn("補充:", self.output.getvalue())
+
+    def test_weekly_issue_is_reused_on_sunday_and_new_on_monday(self):
+        self.rss = evidence("週間名称A")
+        self.assertEqual(self.run_main(), 0)
+        sunday = NOW + dt.timedelta(days=2)
+        self.rss = evidence("週間名称B", now=sunday)
+        self.assertEqual(self.run_main(sunday), 0)
+        self.assertEqual(len(self.github.issues), 1)
+        self.assertEqual(len(self.published()), 2)
+        monday = NOW + dt.timedelta(days=3)
+        self.rss = evidence("翌週名称", now=monday)
+        self.assertEqual(self.run_main(monday), 0)
+        self.assertEqual(len(self.github.issues), 2)
+        self.assertEqual(self.github.issues[-1]["title"], "週間新語候補 2026-10-05")
 
     def test_toronto_dates_in_winter_summer_and_transition_days(self):
         for local_date, utc_date in (
@@ -150,7 +165,8 @@ class CollectorTests(unittest.TestCase):
                 now = dt.datetime.fromisoformat(utc_date)
                 self.rss = evidence(f"新名称{local_date}", now=now)
                 self.assertEqual(self.run_main(now), 0)
-                self.assertEqual(self.github.issues[0]["title"], f"新語候補 {local_date}")
+                local = dt.date.fromisoformat(local_date)
+                self.assertEqual(self.github.issues[0]["title"], f"週間新語候補 {local - dt.timedelta(days=local.weekday())}")
 
     def test_fallback_expands_window_and_marks_older_words(self):
         for days, expected_stage in ((10, "直近30日"), (100, "直近365日"), (500, "期間制限なし")):
@@ -164,9 +180,9 @@ class CollectorTests(unittest.TestCase):
                 self.assertIn(f"Search: 補充: {expected_stage}", self.output.getvalue())
                 self.assertIn("過去の未登録語を含む", self.github.issues[0]["body"])
 
-    def test_recent_window_is_twenty_four_elapsed_hours_across_dst(self):
+    def test_recent_window_is_seven_elapsed_days_across_dst(self):
         now = dt.datetime(2026, 11, 1, 19, tzinfo=collector.TZ)
-        published = now.astimezone(dt.timezone.utc) - dt.timedelta(hours=24, minutes=30)
+        published = now.astimezone(dt.timezone.utc) - dt.timedelta(days=7, minutes=30)
         self.rss = evidence("夏時間切替の名称")
         for item in self.rss:
             item["pubdate"] = email.utils.format_datetime(published)
@@ -186,7 +202,7 @@ class CollectorTests(unittest.TestCase):
         self.rss = [
             article("不正日付", "媒体A") | {"pubdate": "invalid"},
             article("未来日付", "媒体A", age=dt.timedelta(hours=-1)),
-            article("古い日付", "媒体A", age=dt.timedelta(days=2)),
+            article("古い日付", "媒体A", age=dt.timedelta(days=8)),
         ]
         self.assertEqual(self.run_main(), 1)
         self.assertIn("invalid_or_future_date", self.output.getvalue())
@@ -310,7 +326,8 @@ class CollectorTests(unittest.TestCase):
         self.github = FakeGitHub([legacy])
         self.rss = evidence("新形式の候補")
         self.assertEqual(self.run_main(), 0)
-        self.assertEqual(len(self.published()), 2)
+        self.assertEqual(len(self.published()), 1)
+        self.assertEqual(self.github.issues[0]["title"], legacy["title"])
         self.assertIn("手書きメモ", self.github.issues[0]["body"])
         self.assertIn(row["word"], self.github.issues[0]["body"])
 

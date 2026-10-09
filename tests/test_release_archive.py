@@ -40,7 +40,7 @@ class ArchiveTests(unittest.TestCase):
         self.assertEqual(manifest["word_count"], 4)
         self.assertEqual(set(manifest["category_counts"]), {tag for row in self.rows for tag in row["categories"]})
         with zipfile.ZipFile(self.output) as archive:
-            self.assertEqual(set(archive.namelist()), {"dictionary-0001.tsv", "metadata-0001.jsonl", "manifest.json"})
+            self.assertEqual(set(archive.namelist()), {"dictionary-0001.tsv", "metadata-0001.jsonl", "manifest.json", "SOURCES.txt"})
             raw = archive.read("dictionary-0001.tsv")
             self.assertFalse(raw.startswith(b"\xef\xbb\xbf"))
             self.assertNotIn(b"http", raw)

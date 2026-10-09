@@ -26,7 +26,7 @@ REPO = os.environ.get("GITHUB_REPOSITORY", "KazumaProject/New-word")
 TOKEN = os.environ.get("GH_TOKEN", "")
 CODE_SEARCH_TOKEN = os.environ.get("CODE_SEARCH_TOKEN", "")
 TZ = ZoneInfo("America/Toronto")
-DAILY_LIMIT = 10
+ISSUE_LIMIT = 10
 SEEN_PATH = Path("data/seen.tsv")
 READINGS_PATH = Path(__file__).resolve().parents[1] / "data/readings.json"
 SEEN_FIELDS = ["date", "reading", "word", "pos", "id", "normalized"]
@@ -48,7 +48,7 @@ FALLBACK_QUERIES = (
     'ブランド "名称"',
 )
 SEARCH_STAGES = (
-    ("直近24時間", 1, SEARCH_QUERIES),
+    ("直近7日", 7, SEARCH_QUERIES),
     ("補充: 直近30日", 30, SEARCH_QUERIES + FALLBACK_QUERIES),
     ("補充: 直近365日", 365, SEARCH_QUERIES + FALLBACK_QUERIES),
     ("補充: 期間制限なし", None, SEARCH_QUERIES + FALLBACK_QUERIES),
@@ -584,7 +584,7 @@ def list_issues() -> list[dict]:
 def issue_rows(issue: dict) -> list[dict]:
     """Read metadata and the previous collector's TSV without treating prose as words."""
     body = issue.get("body") or ""
-    date_match = re.fullmatch(r"新語候補 (\d{4}-\d{2}-\d{2})", issue.get("title") or "")
+    date_match = re.fullmatch(r"(?:週間)?新語候補 (\d{4}-\d{2}-\d{2})", issue.get("title") or "")
     date = date_match.group(1) if date_match else ""
     result = {}
     for match in ENTRIES_RE.finditer(body):
@@ -726,7 +726,7 @@ def collect_candidates(now: dt.datetime, excluded: set[str], id_map: dict[str, i
                 accepted.append({
                     "date": now.date().isoformat(), **readings.resolve(word, sources), "word": word,
                     "pos": pos, "id": str(id_map[pos]), "normalized": key, "sources": sources,
-                    "supplement": days != 1,
+                    "supplement": days != 7,
                 })
                 if len(accepted) >= limit:
                     break
@@ -796,7 +796,7 @@ def render_issue(title: str, rows: list[dict]) -> str:
 
 def publish_candidates(title: str, rows: list[dict], existing: dict | None) -> tuple[str, list[dict]]:
     if existing is None:
-        selected = rows[:DAILY_LIMIT]
+        selected = rows[:ISSUE_LIMIT]
         issue = github_api("POST", f"/repos/{REPO}/issues", {"title": title, "body": render_issue(title, selected)})
         return issue["html_url"], selected
 
@@ -806,7 +806,7 @@ def publish_candidates(title: str, rows: list[dict], existing: dict | None) -> t
     previous_rows = issue_rows(current)
     previous_keys = {normalize(row["word"]) for row in previous_rows}
     selected = []
-    remaining = max(0, DAILY_LIMIT - len(previous_rows))
+    remaining = max(0, ISSUE_LIMIT - len(previous_rows))
     for row in rows:
         key = normalize(row["word"])
         if key not in previous_keys and len(selected) < remaining:
@@ -936,7 +936,7 @@ def refresh_issue_readings(issues: list[dict], *, limit: int | None = 10,
     resolver = resolver or ReadingResolver(page_limit=None if limit is None else 20)
     pending = [(issue["number"], normalize(row["word"]))
                for issue in sorted(issues, key=lambda item: item["number"])
-               if re.fullmatch(r"新語候補 \d{4}-\d{2}-\d{2}", issue.get("title", ""))
+               if re.fullmatch(r"(?:週間)?新語候補 \d{4}-\d{2}-\d{2}", issue.get("title", ""))
                for row in issue_rows(issue) if row["reading"] == "要確認"]
     if pending and limit is not None:
         offset = (now or dt.datetime.now(TZ)).date().toordinal() * limit % len(pending)
@@ -945,9 +945,9 @@ def refresh_issue_readings(issues: list[dict], *, limit: int | None = 10,
     attempted = 0
     changed = 0
     confirmed = []
-    # Rotate the bounded daily backlog so later Issues also receive retries.
+    # Rotate the bounded reading backlog so later Issues also receive retries.
     for issue in sorted(issues, key=lambda item: item["number"]):
-        if not re.fullmatch(r"新語候補 \d{4}-\d{2}-\d{2}", issue.get("title", "")):
+        if not re.fullmatch(r"(?:週間)?新語候補 \d{4}-\d{2}-\d{2}", issue.get("title", "")):
             continue
         updates = {}
         for row in issue_rows(issue):
@@ -984,8 +984,9 @@ def write_summary(lines: list[str]) -> None:
 
 def main(now: dt.datetime | None = None) -> int:
     now = (now or dt.datetime.now(TZ)).astimezone(TZ)
-    title = f"新語候補 {now.date().isoformat()}"
-    print(f"Collect: Toronto {now:%Y-%m-%d %H:%M %Z}; daily limit {DAILY_LIMIT}", flush=True)
+    week_start = now.date() - dt.timedelta(days=now.weekday())
+    title = f"週間新語候補 {week_start.isoformat()}"
+    print(f"Collect: Toronto {now:%Y-%m-%d %H:%M %Z}; weekly Issue limit {ISSUE_LIMIT}", flush=True)
     try:
         issues = list_issues()
         readings = ReadingResolver()
@@ -995,9 +996,9 @@ def main(now: dt.datetime | None = None) -> int:
         previous_rows = issue_rows(existing) if existing else []
         # An existing Issue also recovers seen.tsv after a failed database push.
         append_seen(previous_rows)
-        remaining = max(0, DAILY_LIMIT - len(previous_rows))
+        remaining = max(0, ISSUE_LIMIT - len(previous_rows))
         if remaining == 0:
-            print(f"Daily Issue already has {len(previous_rows)} candidates: {existing['html_url']}")
+            print(f"Weekly Issue already has {len(previous_rows)} candidates: {existing['html_url']}")
             write_summary([f"## {title}", f"掲載済み: {len(previous_rows)}語。上限に達しているため追加なし。", existing["html_url"]])
             return 0
 
@@ -1022,7 +1023,7 @@ def main(now: dt.datetime | None = None) -> int:
 
         url, published = publish_candidates(title, accepted, existing)
         saved = append_seen(published)
-        print(f"Created/updated: {url}\nDaily candidates: {len(published)}\nNew seen records: {saved}")
+        print(f"Created/updated: {url}\nWeekly candidates: {len(published)}\nNew seen records: {saved}")
         write_summary([f"## {title}", f"掲載: {len(published)}語 / 履歴への追加: {saved}語", url])
         return 0
     except Exception as error:
