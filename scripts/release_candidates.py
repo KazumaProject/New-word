@@ -20,7 +20,6 @@ from zoneinfo import ZoneInfo
 import candidate_pipeline
 
 TZ = ZoneInfo("America/Toronto")
-DAILY_LIMIT = 10
 READINGS_PATH = Path(__file__).resolve().parents[1] / "data/readings.json"
 CATEGORIES = candidate_pipeline.load_categories(Path(__file__).resolve().parents[1] / "data/categories.json")
 
@@ -294,14 +293,14 @@ def public_reading_document(url: str) -> str:
     return raw.decode(charset[1].decode("ascii") if charset else "utf-8", errors="replace")
 
 
-def publisher_url(url: str) -> str:
+def publisher_url(url: str, *, fetch=None, api_request=None) -> str:
     """Resolve the public Google News article wrapper to its publisher URL."""
     parts = urllib.parse.urlsplit(url)
     if parts.hostname != "news.google.com":
         return url
     if not re.fullmatch(r"/(?:rss/)?(?:articles|read)/[A-Za-z0-9_-]+", parts.path):
         raise ValueError("Unsupported Google News link")
-    wrapper = public_reading_document(url)
+    wrapper = (fetch or public_reading_document)(url)
     signature = re.search(r'data-n-a-sg="([^"<>]+)"', wrapper)
     timestamp = re.search(r'data-n-a-ts="(\d+)"', wrapper)
     if not signature or not timestamp:
@@ -313,7 +312,7 @@ def publisher_url(url: str) -> str:
     body = urllib.parse.urlencode({"f.req": json.dumps([
         [["Fbv4je", json.dumps(inner), None, "generic"]]
     ])}).encode()
-    raw = request("https://news.google.com/_/DotsSplashUi/data/batchexecute",
+    raw = (api_request or request)("https://news.google.com/_/DotsSplashUi/data/batchexecute",
                   method="POST", body=body, headers={"Content-Type": "application/x-www-form-urlencoded"},
                   timeout=10, max_bytes=100_000).decode("utf-8")
     for line in raw.splitlines():
@@ -453,8 +452,3 @@ def require_official_name(word, sources, readings):
 
 def verify_usage_sources(word, sources, readings):
     return candidate_pipeline.verified_usage(word, sources, readings, SimpleNamespace(**globals()))
-
-
-def collect_candidates(now, excluded, limit, readings, *, pending, retry_state, dictionary):
-    return candidate_pipeline.collect(now, excluded, limit, readings, pending, CATEGORIES,
-                                      SimpleNamespace(**globals()), retry_state=retry_state, dictionary=dictionary)

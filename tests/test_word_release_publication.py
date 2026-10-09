@@ -14,7 +14,9 @@ import publish_word_release as publisher
 
 class FakeRelease:
     def __init__(self):
-        self.release = None
+        self.release = {"id": 1, "immutable": False, "assets": [], "draft": False,
+                        "tag_name": publisher.TAG, "body": "Owner-created editable release",
+                        "html_url": f"https://github.com/{publisher.REPOSITORY}/releases/tag/{publisher.TAG}"}
         self.raw = None
         self.calls = []
         self.uploads = 0
@@ -93,12 +95,12 @@ class PublicationTests(unittest.TestCase):
     def publish(self, **kwargs):
         return publisher.publish(self.output, client=self.client, **kwargs)
 
-    def test_first_publication_creates_one_release_and_one_verified_zip(self):
+    def test_first_upload_uses_owner_created_release_and_one_verified_zip(self):
         self.publish()
         self.assertFalse(self.client.release["draft"])
         self.assertEqual(self.client.release["tag_name"], "new-words")
         self.assertEqual([asset["name"] for asset in self.client.release["assets"]], ["new-words.zip"])
-        self.assertEqual(sum(method == "POST" for method, _, _ in self.client.calls), 1)
+        self.assertEqual(sum(method == "POST" for method, _, _ in self.client.calls), 0)
         self.assertTrue(all("/issues" not in path and "converter" not in path for _, path, _ in self.client.calls))
 
     def test_unchanged_run_skips_asset_and_release_writes(self):
@@ -116,7 +118,7 @@ class PublicationTests(unittest.TestCase):
         self.publish()
         self.assertEqual(self.client.uploads, 2)
         self.assertEqual(len(self.client.release["assets"]), 1)
-        self.assertEqual(sum(method == "POST" for method, _, _ in self.client.calls), 1)
+        self.assertEqual(sum(method == "POST" for method, _, _ in self.client.calls), 0)
         self.assertEqual(data.validate_archive(self.output)["word_count"], 5)
 
     def test_upload_failure_recovers_from_git_without_a_second_release(self):
@@ -132,19 +134,16 @@ class PublicationTests(unittest.TestCase):
         self.client.fail_upload = False
         self.publish()
         self.assertEqual(len(self.client.release["assets"]), 1)
-        self.assertEqual(sum(method == "POST" for method, _, _ in self.client.calls), 1)
+        self.assertEqual(sum(method == "POST" for method, _, _ in self.client.calls), 0)
 
-    def test_lost_create_or_upload_response_is_idempotently_recovered(self):
-        self.client.lose_create_response = True
-        with self.assertRaises(publisher.APIError):
-            self.publish()
+    def test_lost_upload_response_is_idempotently_recovered(self):
         self.client.lose_upload_response = True
         with self.assertRaisesRegex(RuntimeError, "response was lost"):
             self.publish()
         self.publish()
         self.assertEqual(self.client.uploads, 1)
         self.assertFalse(self.client.release["draft"])
-        self.assertEqual(sum(method == "POST" for method, _, _ in self.client.calls), 1)
+        self.assertEqual(sum(method == "POST" for method, _, _ in self.client.calls), 0)
 
     def test_existing_immutable_release_blocks_publication(self):
         self.publish()
@@ -155,9 +154,39 @@ class PublicationTests(unittest.TestCase):
         self.assertEqual(self.client.uploads, 1)
         self.assertTrue(all(method == "GET" for method, _, _ in self.client.calls[count:]))
 
+    def test_editable_release_updates_without_administrator_endpoint(self):
+        self.publish()
+        self.client.setting_denied = True
+        self.client.calls.clear()
+        self.publish(force=True)
+        self.assertEqual(self.client.uploads, 2)
+        self.assertFalse(any(path.endswith("immutable-releases") for _, path, _ in self.client.calls))
+
+    def test_owner_must_publish_initial_draft_before_workflow_can_update_it(self):
+        self.client.release["draft"] = True
+        with self.assertRaisesRegex(RuntimeError, "mode=rebuild"):
+            self.publish()
+        self.assertEqual(self.client.uploads, 0)
+        self.assertTrue(all(method == "GET" for method, _, _ in self.client.calls))
+
+    def test_missing_release_permission_error_explains_recovery_and_keeps_archive(self):
+        self.client.release = None
+        self.client.setting_denied = True
+        before = self.output.read_bytes()
+        with self.assertRaisesRegex(RuntimeError, "mode=rebuild"):
+            self.publish()
+        self.assertEqual(self.output.read_bytes(), before)
+        self.assertIsNone(self.client.release)
+        self.assertEqual(self.client.uploads, 0)
+        self.assertFalse(any(path.endswith("immutable-releases") for _, path, _ in self.client.calls))
+        self.client.release = FakeRelease().release
+        self.publish()
+        self.assertEqual(self.client.uploads, 1)
+
     def test_enabled_or_unknown_immutability_blocks_first_publication(self):
         for denied in (False, True):
             client = FakeRelease()
+            client.release = None
             client.immutable_setting = True
             client.setting_denied = denied
             with self.assertRaises(RuntimeError):
@@ -169,7 +198,7 @@ class PublicationTests(unittest.TestCase):
         self.client.corrupt_digest = True
         with self.assertRaisesRegex(RuntimeError, "整合性"):
             self.publish()
-        self.assertTrue(self.client.release["draft"])
+        self.assertEqual(self.client.release["body"], "Owner-created editable release")
         self.client.corrupt_digest = False
         self.publish()
         self.assertFalse(self.client.release["draft"])

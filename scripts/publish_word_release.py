@@ -54,19 +54,13 @@ def release_state(client):
     except APIError as error:
         if error.status != 404:
             raise
-        # This admin-read endpoint can be unavailable to a token. Fail on an
-        # explicit permission error rather than changing repository settings.
-        try:
-            setting = client.api("GET", f"/repos/{REPOSITORY}/immutable-releases")
-        except APIError as setting_error:
-            if setting_error.status != 404:
-                raise RuntimeError("新規Releaseのimmutable設定を確認できません。可変Releaseを確認して作成してください。") from setting_error
-        else:
-            if setting.get("enabled"):
-                raise RuntimeError("immutable Releaseが有効です。同じAssetを更新できないため公開を停止します。")
-        return None
+        # Initial creation requires the owner's one-time settings confirmation.
+        # A contents-write token never needs the administration-read endpoint.
+        raise RuntimeError("初回公開の設定が必要です。管理者がimmutable Releaseを無効と確認し、タグnew-wordsの公開済み・更新可能なReleaseを作成してから、Monthly dictionary gapsをmode=rebuildで実行してください。収集済みデータはGit、検証済みZIPはworkflow artifactに保存されています。") from error
     if release.get("immutable") is not False:
         raise RuntimeError("Releaseがimmutable、または更新可否が不明です。公開を停止します。")
+    if release.get("draft"):
+        raise RuntimeError("初回のnew-words Releaseは、管理者がimmutable設定を無効と確認して公開してください。下書きReleaseは更新しません。公開後にMonthly dictionary gapsをmode=rebuildで実行してください。")
     assets = client.api("GET", f"/repos/{REPOSITORY}/releases/{release['id']}/assets?per_page=100")
     if len(assets) > 1 or any(asset["name"] != ASSET for asset in assets):
         raise RuntimeError("new-words Releaseに別のAssetがあります。既存ファイルは削除しません。")
@@ -104,6 +98,7 @@ def notes(manifest, archive_sha):
         f"- ZIP SHA-256: `{archive_sha}`", "",
         "new-words.zipを展開し、manifest.jsonが列挙するdictionary-*.tsvを使用してください。",
         "TSVはヘッダーなしの読み・表記・品詞ラベルの3列です。根拠はmetadata-*.jsonlに保存しています。",
+        "出典・変更内容・CC BY-SAの条件はZIP内のSOURCES.txtを確認してください。",
         "GitHubが自動表示するSource codeアーカイブは辞書用配布ファイルではありません。",
     ]) + "\n"
 
@@ -115,21 +110,13 @@ def publish(path, *, client=None, force=False):
     manifest = data.validate_archive(path)
     release = release_state(client)
     body = notes(manifest, file_sha256(path))
-    if release is None:
-        release = client.api("POST", f"/repos/{REPOSITORY}/releases", {
-            "tag_name": TAG, "target_commitish": manifest["source_commit"], "name": TITLE,
-            "body": body, "draft": True, "make_latest": "false",
-        })
-        release = release_state(client)
-        if release is None:
-            raise RuntimeError("Created Release could not be read back")
     asset = release["assets"][0] if release["assets"] else None
     unchanged = bool(asset and asset_matches(asset, path, client))
     if force or not unchanged:
         # --clobber deletes first. Git remains authoritative if upload fails.
         client.upload(path)
         release = release_state(client)
-        if release is None or len(release["assets"]) != 1 or not asset_matches(release["assets"][0], path, client):
+        if len(release["assets"]) != 1 or not asset_matches(release["assets"][0], path, client):
             raise RuntimeError("配布したZIPの整合性を確認できません。Gitから再配布してください。")
     if release.get("body") != body or release.get("draft"):
         release = client.api("PATCH", f"/repos/{REPOSITORY}/releases/{release['id']}",
@@ -137,7 +124,7 @@ def publish(path, *, client=None, force=False):
     if release.get("immutable") is not False:
         raise RuntimeError("Releaseがimmutableになりました。次回更新できないため設定を確認してください。")
     url = release.get("html_url", f"https://github.com/{REPOSITORY}/releases/tag/{TAG}")
-    summary(["## 新語候補Release", f"累積: {manifest['word_count']}語 / 辞書照合: v1.7.256・全13パック確認済み",
+    summary(["## 月次辞書候補Release", f"累積: {manifest['word_count']}語 / 辞書照合: v1.7.256・全13パック確認済み",
              "内容変更なし。ZIP置換を省略しました。" if unchanged and not force else "ZIPを検証して配布しました。", url])
     return url
 
@@ -148,6 +135,7 @@ def ensure_pushed(client):
                "scripts/release_candidates.py", "scripts/candidate_pipeline.py", "scripts/collect_release_words.py",
                "scripts/publish_word_release.py", "data/dictionary-release.json",
                "scripts/dictionary_assets.py", "scripts/DecodeDictionary.java"]
+    tracked += ["data/sources.json", "scripts/monthly_sources.py"]
     status = subprocess.check_output(["git", "status", "--porcelain", "--", *tracked], cwd=data.ROOT, text=True)
     if status.strip():
         raise RuntimeError("Release用データ・コードをGitへ保存してpushしてから配布してください。")
@@ -181,7 +169,9 @@ def main():
         return 0
     except Exception as error:
         print(f"Release publication failed: {error}", file=sys.stderr)
-        summary(["## Release配布: 失敗", f"理由: {error}", "保存済みのGitデータから再配布できます。"])
+        summary(["## Release配布: 失敗", f"理由: {error}",
+                 "原因を解消後、Actions → Monthly dictionary gaps → Run workflow → mode: rebuildで再配布してください。",
+                 "収集済みデータはGit、検証済みZIPはこの実行のdictionary-gaps-<run_id> artifactに保存されています。"])
         return 1
 
 

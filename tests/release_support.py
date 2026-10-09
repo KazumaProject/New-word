@@ -17,6 +17,7 @@ import release_candidates as collector
 import release_archive as data
 import collect_release_words as release
 import dictionary_assets as dictionaries
+import monthly_sources as monthly
 
 NOW = dt.datetime(2026, 10, 8, 19, tzinfo=collector.TZ)
 REGISTERED_SEED_WORDS = {"グリークヨーグルト", "スポットワーク", "モキュメンタリー", "モフリン", "チームみらい", "ぬい活"}
@@ -86,6 +87,10 @@ class NewsFixture(unittest.TestCase):
         self.dictionary = FakeDictionary()
         self.output = io.StringIO()
         for patcher in (
+            patch.object(monthly, "load_sources", return_value=[next(source for source in monthly.load_sources() if source['id'] == 'category_discovery')]),
+            patch.object(monthly.Network, "throttle", return_value=None),
+            patch.object(monthly, "verify_usage", side_effect=lambda word, sources, readings, context: collector.verify_usage_sources(word, sources, readings)),
+            patch.object(monthly, "official_name", side_effect=lambda word, sources, readings, context: collector.require_official_name(word, sources, readings)),
             patch.object(dictionaries.DictionaryIndex, "from_environment", return_value=self.dictionary),
             patch.object(collector, "google_news_rss", side_effect=lambda query: self.rss),
             patch.object(collector, "verify_usage_sources", side_effect=lambda word, sources, readings: sources),

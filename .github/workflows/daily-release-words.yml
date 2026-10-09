@@ -1,15 +1,15 @@
-name: Daily word release
+name: Monthly dictionary gaps
 
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: "collect: 新語収集 / rebuild: 保存済みデータの再配布"
+        description: "collect: 未収録の名詞・名称を月次収集 / rebuild: 保存済みデータの再配布"
         type: choice
         options: [collect, rebuild]
         default: collect
   schedule:
-    - cron: "0 19 * * *"
+    - cron: "0 19 1 * *"
       timezone: America/Toronto
 
 permissions:
@@ -23,21 +23,21 @@ jobs:
   release:
     if: github.repository == 'KazumaProject/New-word' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 300
     env:
       GH_TOKEN: ${{ github.token }}
       GITHUB_REPOSITORY: ${{ github.repository }}
       COLLECTION_MODE: ${{ inputs.mode || 'collect' }}
       DICTIONARY_INDEX_PATH: .cache/dictionary.sqlite
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
         with:
           ref: ${{ github.event.repository.default_branch }}
           fetch-depth: 0
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: '3.12'
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -45,8 +45,6 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Test collectors and archive
         run: python -B -m unittest discover -s tests -v
-      - name: Check mutable Release
-        run: python scripts/publish_word_release.py --check
       - name: Download and verify all 13 dictionary packs
         run: python scripts/dictionary_assets.py --output "$DICTIONARY_INDEX_PATH"
       - name: Collect Release candidates
@@ -65,7 +63,18 @@ jobs:
           git commit -m "chore: update cumulative Release words and pending candidates"
           git push
       - name: Build and validate one ZIP
+        id: archive
         run: python scripts/release_archive.py
+      - name: Preserve the validated ZIP and collection report
+        if: always() && steps.archive.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: dictionary-gaps-${{ github.run_id }}
+          path: |
+            dist/new-words.zip
+            data/release/collection-state.json
+          if-no-files-found: error
+          retention-days: 30
       - name: Update the single Release asset
         run: |
           if [ "$COLLECTION_MODE" = "rebuild" ]; then

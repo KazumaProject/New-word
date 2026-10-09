@@ -14,6 +14,7 @@ import zipfile
 
 import release_candidates as news
 import dictionary_assets as dictionaries
+import monthly_sources
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data/release"
@@ -68,7 +69,12 @@ def validate_row(row, categories):
         raise ValueError("Only confirmed readings and usages may be distributed")
     sources = source_list(row.get("sources"))
     hosts = {news.urllib.parse.urlsplit(source["link"]).hostname.lower().removeprefix("www.") for source in sources}
-    if len(hosts) < 2 or len(news.candidate_pipeline.independent_sources(sources, news)) < 2:
+    reference = monthly_sources.valid_reference_evidence(row)
+    if row.get("metadata_version", 1) not in {1, 2} or row.get("evidence_type", "legacy_discovery") not in {"legacy_discovery", "discovery", "curated_reference", "authoritative"}:
+        raise ValueError("Unsupported entry metadata or evidence type")
+    if row.get("evidence_type") in {"curated_reference", "authoritative"} and not reference:
+        raise ValueError("Reference evidence is missing or does not attest the reading")
+    if not reference and (len(hosts) < 2 or len(news.candidate_pipeline.independent_sources(sources, news)) < 2):
         raise ValueError("Two independent Japanese usage sources are required")
     method = row.get("reading_method")
     if method == "kana":
@@ -79,7 +85,7 @@ def validate_row(row, categories):
             raise ValueError("Confirmed reading requires evidence")
     else:
         raise ValueError("Estimated or unknown reading method")
-    if row["kind"] != "common" and not source_list(row.get("official_name_sources")):
+    if not reference and row["kind"] != "common" and not source_list(row.get("official_name_sources")):
         raise ValueError("Named entities require official naming evidence")
     dictionaries.validate_check(row.get("dictionary_check"), allow_unchecked=True)
     for field in ("accepted_date", "checked_at"):
@@ -152,12 +158,14 @@ def load_entries(directory=DATA_DIR, *, categories=None):
     return rows
 
 
-def save_entries(rows, directory=DATA_DIR, *, categories=None, part_bytes=PART_BYTES):
+def save_entries(rows, directory=DATA_DIR, *, categories=None, part_bytes=PART_BYTES, allow_empty=False):
     categories = news.CATEGORIES if categories is None else categories
     validate_rows(rows, categories)
     payloads = list(parts(rows, part_bytes=part_bytes))
     if not payloads:
-        raise ValueError("Refusing to replace canonical data with an empty list")
+        if not allow_empty:
+            raise ValueError("Refusing to replace canonical data with an empty list")
+        payloads = [(1, b"", b"", 0)]
     names = set()
     for index, _, metadata, _ in payloads:
         name = f"entries-{index:04}.jsonl"
@@ -171,10 +179,12 @@ def save_entries(rows, directory=DATA_DIR, *, categories=None, part_bytes=PART_B
 def content_digest(manifest):
     fields = ("schema_version", "encoding", "line_endings", "columns", "categories", "files",
               "word_count", "category_counts", "primary_category_counts", "dictionary_check", "part_bytes")
+    if manifest["schema_version"] >= 2:
+        fields += ("attribution", "collection_status")
     return sha256(json_bytes({field: manifest[field] for field in fields}))
 
 
-def build_archive(rows, output, *, source_commit, updated_at, categories=None, part_bytes=PART_BYTES, zip_bytes=ZIP_BYTES):
+def build_archive(rows, output, *, source_commit, updated_at, categories=None, part_bytes=PART_BYTES, zip_bytes=ZIP_BYTES, collection_status=None):
     categories = news.CATEGORIES if categories is None else categories
     validate_rows(rows, categories)
     for row in rows:
@@ -187,13 +197,16 @@ def build_archive(rows, output, *, source_commit, updated_at, categories=None, p
     if timestamp.utcoffset() != dt.timedelta(0):
         raise ValueError("Manifest timestamp must be UTC")
     manifest = {
-        "schema_version": 1, "source_commit": source_commit,
+        "schema_version": 2, "source_commit": source_commit,
         "updated_at": timestamp.isoformat().replace("+00:00", "Z"),
         "encoding": "UTF-8", "line_endings": "LF", "columns": COLUMNS,
         "categories": [{"id": item["id"], "label": item["label"]} for item in categories],
         "word_count": len(rows), "category_counts": dict(Counter(tag for row in rows for tag in row["categories"])),
         "primary_category_counts": dict(Counter(row["category"] for row in rows)),
         "dictionary_check": {**dictionaries.provenance(), "status": "verified"}, "part_bytes": part_bytes, "files": [],
+        "collection_status": collection_status or {"complete": False, "reason": "No source coverage report supplied"},
+        "attribution": {"name": "SOURCES.txt", "bytes": len(monthly_sources.ATTRIBUTION.encode("utf-8")),
+                        "sha256": sha256(monthly_sources.ATTRIBUTION.encode("utf-8"))},
     }
     output.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -210,6 +223,7 @@ def build_archive(rows, output, *, source_commit, updated_at, categories=None, p
                     member(name, raw)
                     manifest["files"].append({"name": name, "kind": kind, "rows": count,
                                                "bytes": len(raw), "sha256": sha256(raw)})
+            member("SOURCES.txt", monthly_sources.ATTRIBUTION.encode("utf-8"))
             manifest["data_sha256"] = content_digest(manifest)
             member("manifest.json", json_bytes(manifest, pretty=True))
         if output.stat().st_size >= zip_bytes:
@@ -232,12 +246,24 @@ def validate_archive(path, *, zip_bytes=ZIP_BYTES, dictionary=None):
         timestamp = dt.datetime.fromisoformat(manifest.get("updated_at", "").replace("Z", "+00:00"))
         if not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", commit) or timestamp.utcoffset() != dt.timedelta(0):
             raise ValueError("Invalid archive provenance")
-        if (manifest.get("schema_version") != 1 or manifest.get("columns") != COLUMNS
+        if (manifest.get("schema_version") not in {1, 2} or manifest.get("columns") != COLUMNS
                 or manifest.get("encoding") != "UTF-8" or manifest.get("line_endings") != "LF"
                 or not isinstance(manifest.get("part_bytes"), int) or not 0 < manifest["part_bytes"] <= PART_BYTES):
             raise ValueError("Unsupported dictionary archive format")
         files = manifest["files"]
         expected = [item["name"] for item in files] + ["manifest.json"]
+        if manifest["schema_version"] == 2:
+            attribution = manifest["attribution"]
+            if attribution.get("name") != "SOURCES.txt" or not isinstance(manifest.get("collection_status"), dict):
+                raise ValueError("Invalid source attribution or coverage")
+            if "SOURCES.txt" not in archive.namelist():
+                raise ValueError("Missing ZIP members: SOURCES.txt")
+            if archive.getinfo("SOURCES.txt").file_size > 64 * 1024:
+                raise ValueError("Oversized attribution")
+            raw = archive.read("SOURCES.txt")
+            if len(raw) != attribution["bytes"] or sha256(raw) != attribution["sha256"]:
+                raise ValueError("Attribution integrity check failed")
+            expected.append("SOURCES.txt")
         if len(set(expected)) != len(expected) or sorted(archive.namelist()) != sorted(expected):
             raise ValueError("Missing, duplicate, or unexpected ZIP members")
         if len(files) % 2 or not files:
@@ -292,6 +318,7 @@ def data_revision():
     raw = subprocess.check_output([
         "git", "log", "-1", "--format=%H%x09%cI", "--", "data/release/entries-*.jsonl",
         "data/categories.json", "scripts/release_archive.py",
+        "data/sources.json", "scripts/monthly_sources.py", "data/release/collection-state.json",
         "data/dictionary-release.json", "scripts/dictionary_assets.py", "scripts/DecodeDictionary.java",
     ], cwd=ROOT, text=True).strip()
     commit, timestamp = raw.split("\t")
@@ -311,7 +338,9 @@ def main():
             if index.contains(row["word"]) != (row["dictionary_check"]["status"] == "present"):
                 raise ValueError("Saved dictionary verification disagrees with the decoded outputs")
         rows = [row for row in rows if row["dictionary_check"]["status"] == "missing"]
-        manifest = build_archive(rows, args.output, source_commit=commit, updated_at=timestamp)
+        state_path = DATA_DIR / "collection-state.json"
+        state = monthly_sources.load_state(DATA_DIR) if state_path.exists() else None
+        manifest = build_archive(rows, args.output, source_commit=commit, updated_at=timestamp, collection_status=state)
     print(f"Validated {manifest['word_count']} words: {args.output}")
 
 
