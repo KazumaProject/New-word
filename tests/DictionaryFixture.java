@@ -68,15 +68,47 @@ class DictionaryFixture {
     public static void main(String[] args) throws Exception {
         String mode = args.length > 1 ? args[1] : "valid";
         Map<String, String> packs = Map.ofEntries(
-            Map.entry("emoji", "_emoji.dat"), Map.entry("emoticon", "_emoticon.dat"),
-            Map.entry("english_reading", ".dat.zip"), Map.entry("kotowaza", "_kotowaza.dat"),
-            Map.entry("neologd", "_neologd.dat.zip"), Map.entry("person_name", "_person_names.dat"),
-            Map.entry("places", "_places.dat.zip"), Map.entry("reading_correction", "_reading_correction.dat"),
-            Map.entry("single_kanji", "_singleKanji.dat"), Map.entry("symbol", "_symbol.dat"),
-            Map.entry("system", ".dat.zip"), Map.entry("web", "_web.dat.zip"), Map.entry("wiki", "_wiki.dat.zip"));
+            Map.entry("categories/address", ".dat.zip"),
+            Map.entry("categories/agreement", ".dat.zip"),
+            Map.entry("categories/award", ".dat.zip"),
+            Map.entry("categories/character", ".dat.zip"),
+            Map.entry("categories/event", ".dat.zip"),
+            Map.entry("categories/facility", ".dat.zip"),
+            Map.entry("categories/initiative", ".dat.zip"),
+            Map.entry("categories/kampo", ".dat.zip"),
+            Map.entry("categories/lineage", ".dat.zip"),
+            Map.entry("categories/medical", ".dat.zip"),
+            Map.entry("categories/mythological_figure", ".dat.zip"),
+            Map.entry("categories/organization", ".dat.zip"),
+            Map.entry("categories/person", ".dat.zip"),
+            Map.entry("categories/place", ".dat.zip"),
+            Map.entry("categories/product", ".dat.zip"),
+            Map.entry("categories/station", ".dat.zip"),
+            Map.entry("categories/term", ".dat.zip"),
+            Map.entry("categories/transport_route", ".dat.zip"),
+            Map.entry("categories/vehicle", ".dat.zip"),
+            Map.entry("categories/work_anime", ".dat.zip"),
+            Map.entry("categories/work_book", ".dat.zip"),
+            Map.entry("categories/work_film", ".dat.zip"),
+            Map.entry("categories/work_franchise", ".dat.zip"),
+            Map.entry("categories/work_game", ".dat.zip"),
+            Map.entry("categories/work_manga", ".dat.zip"),
+            Map.entry("categories/work_music", ".dat.zip"),
+            Map.entry("categories/work_other", ".dat.zip"),
+            Map.entry("categories/work_periodical", ".dat.zip"),
+            Map.entry("categories/work_program", ".dat.zip"),
+            Map.entry("categories/work_stage", ".dat.zip"),
+            Map.entry("emoji", "_emoji.dat"),
+            Map.entry("emoticon", "_emoticon.dat"),
+            Map.entry("english_reading", ".dat.zip"),
+            Map.entry("kotowaza", "_kotowaza.dat"),
+            Map.entry("reading_correction", "_reading_correction.dat"),
+            Map.entry("single_kanji", "_singleKanji.dat"),
+            Map.entry("symbol", "_symbol.dat"),
+            Map.entry("system", ".dat.zip"));
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(Path.of(args[0])))) {
             for (var pack : packs.entrySet()) {
-                if (mode.equals("missing") && pack.getKey().equals("places")) continue;
+                if (mode.equals("missing") && pack.getKey().equals("categories/place")) continue;
                 String last = pack.getKey().equals("reading_correction") ? "補正語\t説明" : "Ｃｌｏｕｄ　Ｎｏｖａ";
                 if (pack.getKey().equals("emoji")) last = "🇦🇨";
                 Trie yomi = trie("かな"), tango = trie("東京", "ヨーグルト", last);

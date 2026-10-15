@@ -40,6 +40,10 @@ class ReadingTests(unittest.TestCase):
         self.assertEqual(collector.reading_hint('ゆめネオバンク'), 'ゆめねおばんく')
         self.assertEqual(collector.reading_hint('ﾌｧｸﾄﾘｰ･ﾚﾝｽﾞ'), 'ふぁくとりーれんず')
 
+    def test_valueless_image_alt_does_not_abort_reading_collection(self):
+        document = '<img alt><img><p>FactoryLens（ファクトリーレンズ）</p>'
+        self.assertEqual(collector.extract_readings('FactoryLens', document), {'ふぁくとりーれんず'})
+
     def test_substrings_scripts_partial_ruby_and_numbers_are_not_guessed(self):
         for document in (
             'SuperFactoryLens（スーパーファクトリーレンズ）',

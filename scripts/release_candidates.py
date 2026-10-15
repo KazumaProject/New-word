@@ -231,7 +231,7 @@ class ReadingHTML(HTMLParser):
         elif tag in {"p", "div", "br", "li", "h1", "h2", "h3", "td"}:
             self.parts.append("\n")
         if tag == "img":
-            self.parts.append(dict(attrs).get("alt", ""))
+            self.parts.append(dict(attrs).get("alt") or "")
 
     def handle_endtag(self, tag):
         if tag in {"script", "style", "noscript"}:

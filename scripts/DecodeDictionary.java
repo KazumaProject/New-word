@@ -4,16 +4,24 @@ import java.nio.file.*;
 import java.util.*;
 import java.util.zip.*;
 
-/** Standalone reader for the released v1.7.256 assets; no converter build needed.
- * Format: converter commit 4080e406fa62650061c4e7d3f24daf73cec97dc7,
+/** Standalone reader for the released v1.7.262 assets; no converter build needed.
+ * Format: converter commit 0fe61a4d2f384834d25112ab24f152a787e1ad6e,
  * LOUDS.writeExternalNotCompress, LOUDSWithTermId.writeExternalNotCompress,
  * TokenArray.writeExternalNotCompress, and GraphBuilder's -2/-1 outputs.
  */
 class DecodeDictionary {
     static final String ROOT = "app/src/main/assets/";
-    static final Set<String> PACKS = Set.of("emoji", "emoticon", "english_reading",
-        "kotowaza", "neologd", "person_name", "places", "reading_correction",
-        "single_kanji", "symbol", "system", "web", "wiki");
+    static final Set<String> PACKS = Set.of(
+        "categories/address", "categories/agreement", "categories/award", "categories/character",
+        "categories/event", "categories/facility", "categories/initiative", "categories/kampo",
+        "categories/lineage", "categories/medical", "categories/mythological_figure", "categories/organization",
+        "categories/person", "categories/place", "categories/product", "categories/station",
+        "categories/term", "categories/transport_route", "categories/vehicle", "categories/work_anime",
+        "categories/work_book", "categories/work_film", "categories/work_franchise", "categories/work_game",
+        "categories/work_manga", "categories/work_music", "categories/work_other", "categories/work_periodical",
+        "categories/work_program", "categories/work_stage", "emoji", "emoticon",
+        "english_reading", "kotowaza", "reading_correction", "single_kanji",
+        "symbol", "system");
     static final int MAX_BYTES = 256 * 1024 * 1024;
 
     static void require(boolean ok, String reason) throws IOException {

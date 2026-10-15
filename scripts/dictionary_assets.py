@@ -21,15 +21,24 @@ import release_candidates as news
 ROOT = Path(__file__).resolve().parents[1]
 LOCK_PATH = ROOT / "data/dictionary-release.json"
 DECODER = ROOT / "scripts/DecodeDictionary.java"
-PACKS = {"emoji", "emoticon", "english_reading", "kotowaza", "neologd", "person_name",
-         "places", "reading_correction", "single_kanji", "symbol", "system", "web", "wiki"}
+PACKS = {
+    "categories/address", "categories/agreement", "categories/award", "categories/character",
+    "categories/event", "categories/facility", "categories/initiative", "categories/kampo",
+    "categories/lineage", "categories/medical", "categories/mythological_figure", "categories/organization",
+    "categories/person", "categories/place", "categories/product", "categories/station",
+    "categories/term", "categories/transport_route", "categories/vehicle", "categories/work_anime",
+    "categories/work_book", "categories/work_film", "categories/work_franchise", "categories/work_game",
+    "categories/work_manga", "categories/work_music", "categories/work_other", "categories/work_periodical",
+    "categories/work_program", "categories/work_stage", "emoji", "emoticon",
+    "english_reading", "kotowaza", "reading_correction", "single_kanji",
+    "symbol", "system"}
 
 
 @cache
 def load_lock():
     lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
     if (lock.get("schema_version") != 1 or lock.get("repository") != "KazumaProject/kotlin-kana-kanji-converter"
-            or lock.get("release") != "v1.7.256" or lock.get("asset") != "japanese_keyboard_dictionary_assets.zip"
+            or lock.get("release") != "v1.7.262" or lock.get("asset") != "japanese_keyboard_dictionary_assets.zip"
             or not re.fullmatch(r"[0-9a-f]{64}", lock.get("sha256", ""))
             or not re.fullmatch(r"[0-9a-f]{64}", lock.get("outputs_sha256", ""))
             or not isinstance(lock.get("bytes"), int) or not 0 < lock["bytes"] < 128 * 1024 * 1024

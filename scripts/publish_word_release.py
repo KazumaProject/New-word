@@ -91,7 +91,7 @@ def asset_matches(asset, path, client):
 def notes(manifest, archive_sha):
     return "\n".join([
         "確認済みの日本語使用例・読みを持つIME候補の累積データです。",
-        "v1.7.256の全13パックに同じ表記の登録がない語を配布します。辞書登録、品詞ID、変換コストの設定は別工程です。", "",
+        "v1.7.262の全38パックに同じ表記の登録がない語を配布します。辞書登録、品詞ID、変換コストの設定は別工程です。", "",
         "カタカナ化や複数語を組み合わせたIME変換の可否は、この照合の対象に含みません。", "",
         f"- 語数: {manifest['word_count']}", f"- 更新日時: {manifest['updated_at']}",
         f"- 元データ: [{manifest['source_commit'][:12]}](https://github.com/{REPOSITORY}/commit/{manifest['source_commit']})",
@@ -124,7 +124,7 @@ def publish(path, *, client=None, force=False):
     if release.get("immutable") is not False:
         raise RuntimeError("Releaseがimmutableになりました。次回更新できないため設定を確認してください。")
     url = release.get("html_url", f"https://github.com/{REPOSITORY}/releases/tag/{TAG}")
-    summary(["## 月次辞書候補Release", f"累積: {manifest['word_count']}語 / 辞書照合: v1.7.256・全13パック確認済み",
+    summary(["## 月次辞書候補Release", f"累積: {manifest['word_count']}語 / 辞書照合: v1.7.262・全38パック確認済み",
              "内容変更なし。ZIP置換を省略しました。" if unchanged and not force else "ZIPを検証して配布しました。", url])
     return url
 

@@ -7,9 +7,15 @@
 | Actions | 頻度 | 内容 |
 |---|---|---|
 | Monthly dictionary gaps | 毎月1日19:00 America/Toronto | 全ソースを探索し、未収録語を累積ZIPへ追加 |
-| Weekly new words | 毎週月曜19:00 America/Toronto | 直近7日を優先して新語候補をIssueへ掲載 |
+| New words every 3 days | 2026-10-15を起点に3日おき19:00 America/Toronto | 直近3日を優先して新語候補をIssueへ掲載 |
 
-日次スケジュールはありません。両方とも手動実行できます。週次Issueは月曜の日付を使う `週間新語候補 YYYY-MM-DD` で、同じ週の再実行は同じIssueに追記し、合計10語までとします。従来のIssueと読み更新機能も保持します。週次Issueでは従来のコード検索に `CODE_SEARCH_TOKEN` が必要です。これはバイナリ辞書との収録照合ではなく、月次ZIPの照合とは独立しています。
+両方とも手動実行できます。Issueの定時収集は10月15日・18日・21日…の3日間隔です。毎日19時のトリガーでTorontoの日付を確認し、対象日だけ収集します。月の境界でも間隔を維持します。GitHub Actionsの混雑で開始が遅れる場合があります。
+
+Issueは期間開始日を使う `3日間新語候補 YYYY-MM-DD` で、同じ3日間の再実行は同じIssueに追記し、合計10語までとします。手動実行は対象日以外も可能です。従来の日次・週次Issueの重複排除と読み更新も保持します。候補が0件の場合は空のIssueを作成せず失敗とします。
+
+Issueでも月次ZIPと同じ検証済みconverter v1.7.262の全38パックに表記を照合します。GitHubコード検索のレート制限に依存せず、追加のsecretは不要です。辞書の取得・検証に失敗した場合は未収録と判定せず停止します。Issue候補の読みが未確定なら確認待ちとして掲載し、辞書登録用TSVには含めません。
+
+ローカルでIssueを収集する場合も、以下の手順で辞書索引を準備して `DICTIONARY_INDEX_PATH` を設定します。索引の環境変数を省略した場合だけ、互換用の従来のコード検索（`CODE_SEARCH_TOKEN` または `GH_TOKEN`）を使用します。この場合はバイナリ辞書内部は未確認です。
 
 ## 対象と収集元
 
@@ -32,7 +38,7 @@
 
 ## 辞書照合と配布形式
 
-比較対象は [converter v1.7.256](https://github.com/KazumaProject/kotlin-kana-kanji-converter/releases/tag/v1.7.256) の全13パックです。固定したZIPのサイズ・SHA-256・全件読み出し結果・各パック件数を検証してからSQLite索引を使います。辞書が取得できない、壊れている、検証できない場合は処理を停止します。
+比較対象は [converter v1.7.262](https://github.com/KazumaProject/kotlin-kana-kanji-converter/releases/tag/v1.7.262) の全38パックです。固定したZIPのサイズ・SHA-256・全件読み出し結果・各パック件数を検証してからSQLite索引を使います。辞書が取得できない、壊れている、検証できない場合は処理を停止します。
 
 **別の読みであっても同じ表記がいずれかのパックにあれば除外します。** NFKC・空白・英字大小を共通ルールで正規化します。カタカナ化や複数語を組み合わせたIME変換結果・順位は判定しません。converterそのものは変更しません。[照合方法](docs/dictionary-check.md)
 
@@ -95,4 +101,4 @@ python scripts/collect_release_words.py --mode rebuild
 python scripts/release_archive.py
 ```
 
-ローカルで月次収集を開始するには `--mode collect` を使います。短い再開検証には `--budget-seconds 60` などを指定できます（最大14400秒）。辞書索引・ソースのダウンロード・生成ZIPはGit管理外です。週次Issueの読みだけの更新は従来の `--refresh-readings` を使用できます。
+ローカルで月次収集を開始するには `--mode collect` を使います。短い再開検証には `--budget-seconds 60` などを指定できます（最大14400秒）。辞書索引・ソースのダウンロード・生成ZIPはGit管理外です。Issueの読みだけの更新は従来の `--refresh-readings` を使用できます。

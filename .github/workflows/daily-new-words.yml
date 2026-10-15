@@ -1,4 +1,4 @@
-name: Weekly new words
+name: New words every 3 days
 
 on:
   workflow_dispatch:
@@ -8,7 +8,8 @@ on:
         type: boolean
         default: false
   schedule:
-    - cron: "0 19 * * 1"
+    # The calendar-day gate below keeps a true three-day interval across months.
+    - cron: "0 19 * * *"
       timezone: America/Toronto
 
 permissions:
@@ -20,10 +21,32 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  collect:
+  schedule:
     if: github.repository == 'KazumaProject/New-word' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-latest
+    outputs:
+      due: ${{ steps.check.outputs.due }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - name: Check three-day interval
+        id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            echo "due=$(python3 scripts/collect_new_words.py --schedule-due)" >> "$GITHUB_OUTPUT"
+          else
+            echo "due=true" >> "$GITHUB_OUTPUT"
+          fi
+  collect:
+    needs: schedule
+    if: needs.schedule.outputs.due == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      DICTIONARY_INDEX_PATH: .cache/dictionary.sqlite
     steps:
       - uses: actions/checkout@v5
         with:
@@ -41,6 +64,12 @@ jobs:
 
       - name: Test collector
         run: python3 -B -m unittest discover -s tests -v
+
+      - name: Download and verify all 38 dictionary packs
+        if: inputs.refresh_readings != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/dictionary_assets.py --output "$DICTIONARY_INDEX_PATH"
 
       - name: Collect new words
         env:

@@ -93,7 +93,7 @@ def collect_verified(rows, dictionary, now, mode, directory, *, budget_seconds=4
     missing = sum(row["dictionary_check"]["status"] == "missing" for row in rows)
     if mode == "rebuild":
         summary(["## Release再配布", f"配布対象: {missing}語 / 収録済みのため除外: {len(rows) - missing}語。",
-                 "辞書照合: v1.7.256・全13パック確認済み。ニュース収集は行いません。"])
+                 "辞書照合: v1.7.262・全38パック確認済み。ニュース収集は行いません。"])
         return 0
     pending, _ = load_queue(directory, today)
     excluded = {news.normalize(row["word"]) for row in rows}
@@ -104,7 +104,7 @@ def collect_verified(rows, dictionary, now, mode, directory, *, budget_seconds=4
     missing = sum(row['dictionary_check']['status'] == 'missing' for row in updated)
     summary([f"## 月次辞書候補 {today}", f"配布対象: {missing} / 保存語: {len(updated)} / 保留: {len(pending)} / 語数上限なし",
              "全ソースの処理済み（保留・取得失敗は下記に記録）。" if state["complete"] else "未完了のソースがあります。次回の月次実行または手動collectで再開します。",
-             "辞書照合: v1.7.256・全13パック確認済み。",
+             "辞書照合: v1.7.262・全38パック確認済み。",
              "### ソース別", *[f"- {key}: {value['status']} / {value.get('counts', {})}" +
                                f" / 再確認: {value.get('retry_counts', {})} ({value.get('retry_status', '')})" +
                                (f" / {value['error']}" if value.get('error') else "") for key, value in state["sources"].items()],

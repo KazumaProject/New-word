@@ -51,6 +51,23 @@ class DictionaryAssetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "closed"):
             index.contains("何でも")
 
+    def test_issue_collector_uses_verified_index_without_code_search(self):
+        from test_collect_new_words import collector as issues, evidence, NOW, ID_MAP
+        self.build()
+        with patch.object(dictionaries, "provenance", return_value=self.proof), \
+                dictionaries.DictionaryIndex(self.index) as index, \
+                patch.object(issues, "google_news_rss", return_value=evidence("日本橋") + evidence("未収録名称")), \
+                patch.object(issues, "already_in_japanese_keyboard", side_effect=AssertionError("code search called")), \
+                patch.object(issues.ReadingResolver, "resolve", return_value={"reading": "要確認"}):
+            rows = issues.collect_candidates(NOW, set(), ID_MAP, 10, dictionary_index=index)
+        self.assertEqual([row["word"] for row in rows], ["未収録名称"])
+        self.assertEqual(rows[0]["dictionary_check"]["status"], "missing")
+        self.assertEqual(len(rows[0]["dictionary_check"]["packs"]), len(dictionaries.PACKS))
+        body = issues.render_issue("3日間新語候補 2026-10-15", rows)
+        self.assertIn("検証済み全38パック", body)
+        self.assertNotIn("GitHubコード検索", body)
+        self.assertNotIn("バイナリ辞書内部は未確認", body)
+
     def test_missing_asset_digest_pack_or_changed_release_is_rejected(self):
         for change in ("missing", "digest", "size", "tag", "duplicate"):
             value = metadata(self.lock)
@@ -141,7 +158,7 @@ class SerializedDictionaryTests(unittest.TestCase):
                   for pack, reading, word in (line.split("\t") for line in self.rows.read_text().splitlines())]
         self.assertIn(("english_reading", "かな", "カナ"), values)
         self.assertIn(("system", "かな", "かな"), values)
-        self.assertIn(("places", "かな", "東京"), values)
+        self.assertIn(("categories/place", "かな", "東京"), values)
         self.assertIn(("reading_correction", "かな", "補正語"), values)
         self.assertIn(("emoji", "かな", "🇦🇨"), values)
 
@@ -149,7 +166,7 @@ class SerializedDictionaryTests(unittest.TestCase):
         self.fixture("boundary")
         result = self.decode()
         self.assertEqual(result.returncode, 0, result.stderr.decode())
-        self.assertEqual(len(self.rows.read_text().splitlines()), 63 * 13)
+        self.assertEqual(len(self.rows.read_text().splitlines()), 63 * len(dictionaries.PACKS))
 
     def test_missing_packs_corrupt_postings_and_unknown_sentinels_fail_closed(self):
         for mode in ("missing", "postings", "sentinel"):

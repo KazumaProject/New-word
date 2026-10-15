@@ -28,7 +28,7 @@ Entries identify their sources in source_records and sources in metadata-*.jsonl
 JMdict and JMnedict: Copyright the Electronic Dictionary Research and Development
 Group and Jim Breen. Derived entries are distributed under CC BY-SA 4.0.
 Changes: noun/name selection, category mapping, kana normalization, deduplication,
-and removal of spellings already in converter v1.7.256. No endorsement is implied.
+and removal of spellings already in converter v1.7.262. No endorsement is implied.
 https://www.edrdg.org/jmdict/j_jmdict.html
 https://www.edrdg.org/enamdict/enamdict_doc.html
 https://www.edrdg.org/edrdg/licence.html

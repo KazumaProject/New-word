@@ -38,6 +38,10 @@ class FixtureNetwork:
 
 
 class MonthlyTests(unittest.TestCase):
+    def test_valueless_image_alt_preserves_explicit_readings(self):
+        self.assertEqual(collector.extract_readings('FactoryLens',
+            '<img alt><p>FactoryLens（ファクトリーレンズ）</p>'), {'ふぁくとりーれんず'})
+
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
@@ -315,10 +319,14 @@ class WorkflowTests(unittest.TestCase):
     def test_schedules_publication_order_and_recovery_artifact(self):
         root = data.ROOT / ".github/workflows"
         monthly_workflow = (root / "daily-release-words.yml").read_text()
-        weekly = (root / "daily-new-words.yml").read_text()
+        issues = (root / "daily-new-words.yml").read_text()
         self.assertIn('cron: "0 19 1 * *"', monthly_workflow)
-        self.assertIn('cron: "0 19 * * 1"', weekly)
-        self.assertNotIn('cron: "0 19 * * *"', monthly_workflow + weekly)
+        self.assertIn('cron: "0 19 * * *"', issues)
+        self.assertIn("--schedule-due", issues)
+        self.assertIn("needs.schedule.outputs.due == 'true'", issues)
+        self.assertIn("DICTIONARY_INDEX_PATH:", issues)
+        self.assertLess(issues.index("scripts/dictionary_assets.py"), issues.index("- name: Collect new words"))
+        self.assertNotIn('cron: "0 19 * * *"', monthly_workflow)
         self.assertIn("timeout-minutes: 300", monthly_workflow)
         self.assertNotIn("publish_word_release.py --check", monthly_workflow)
         self.assertLess(monthly_workflow.index("git push"), monthly_workflow.index("Build and validate one ZIP"))
