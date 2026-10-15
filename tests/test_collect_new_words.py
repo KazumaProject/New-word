@@ -50,7 +50,7 @@ def candidate(word, date="2026-10-02", supplement=False):
 
 def issue(number, rows, extra=""):
     date = dt.date.fromisoformat(rows[0]["date"])
-    title = f"週間新語候補 {date - dt.timedelta(days=date.weekday())}" if date == NOW.date() else f"新語候補 {date}"
+    title = f"3日間新語候補 {collector.issue_period_start(date)}" if date == NOW.date() else f"新語候補 {date}"
     return {
         "number": number, "title": title,
         "body": collector.render_issue(title, rows) + extra,
@@ -113,7 +113,7 @@ class CollectorTests(unittest.TestCase):
             patch.object(collector, "public_reading_document", return_value=""),
             patch.object(collector, "READINGS_PATH", Path(directory.name) / "readings.json"),
             patch.object(collector, "google_news_rss", side_effect=lambda query: self.rss),
-            patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(self.summary)}),
+            patch.dict(os.environ, {"GITHUB_STEP_SUMMARY": str(self.summary), "DICTIONARY_INDEX_PATH": ""}),
             patch.object(collector.urllib.request, "urlopen", side_effect=AssertionError("unexpected real network request")),
         ):
             patcher.start()
@@ -130,28 +130,38 @@ class CollectorTests(unittest.TestCase):
     def published(self):
         return collector.issue_rows(self.github.issues[-1])
 
+    def test_missing_configured_dictionary_never_falls_back_to_code_search(self):
+        self.rss = evidence("未確認名称")
+        with patch.dict(os.environ, {"DICTIONARY_INDEX_PATH": str(self.seen.parent / 'missing.sqlite')}), \
+                patch.object(collector, 'already_in_japanese_keyboard') as search:
+            self.assertEqual(self.run_main(), 1)
+        search.assert_not_called()
+        self.assertEqual(self.github.issues, [])
+        self.assertEqual(collector.load_seen(), set())
+
     def test_delayed_start_posts_then_saves_seen(self):
         self.rss = evidence("クラウドノヴァ")
         self.assertEqual(self.run_main(), 0)
-        self.assertEqual(self.github.issues[0]["title"], "週間新語候補 2026-09-28")
+        self.assertEqual(self.github.issues[0]["title"], "3日間新語候補 2026-09-30")
         self.assertEqual(collector.load_seen(), {"クラウドノヴァ"})
         self.assertFalse(self.published()[0]["supplement"])
         self.assertIn("掲載: 1語", self.summary.read_text())
         self.assertNotIn("補充:", self.output.getvalue())
 
-    def test_weekly_issue_is_reused_on_sunday_and_new_on_monday(self):
-        self.rss = evidence("週間名称A")
-        self.assertEqual(self.run_main(), 0)
-        sunday = NOW + dt.timedelta(days=2)
-        self.rss = evidence("週間名称B", now=sunday)
-        self.assertEqual(self.run_main(sunday), 0)
+    def test_three_day_issue_is_reused_then_rotates(self):
+        start = NOW - dt.timedelta(days=2)
+        self.rss = evidence("期間名称A", now=start)
+        self.assertEqual(self.run_main(start), 0)
+        last_day = start + dt.timedelta(days=2)
+        self.rss = evidence("期間名称B", now=last_day)
+        self.assertEqual(self.run_main(last_day), 0)
         self.assertEqual(len(self.github.issues), 1)
         self.assertEqual(len(self.published()), 2)
-        monday = NOW + dt.timedelta(days=3)
-        self.rss = evidence("翌週名称", now=monday)
-        self.assertEqual(self.run_main(monday), 0)
+        next_period = start + dt.timedelta(days=3)
+        self.rss = evidence("次期名称", now=next_period)
+        self.assertEqual(self.run_main(next_period), 0)
         self.assertEqual(len(self.github.issues), 2)
-        self.assertEqual(self.github.issues[-1]["title"], "週間新語候補 2026-10-05")
+        self.assertEqual(self.github.issues[-1]["title"], "3日間新語候補 2026-10-03")
 
     def test_toronto_dates_in_winter_summer_and_transition_days(self):
         for local_date, utc_date in (
@@ -166,7 +176,7 @@ class CollectorTests(unittest.TestCase):
                 self.rss = evidence(f"新名称{local_date}", now=now)
                 self.assertEqual(self.run_main(now), 0)
                 local = dt.date.fromisoformat(local_date)
-                self.assertEqual(self.github.issues[0]["title"], f"週間新語候補 {local - dt.timedelta(days=local.weekday())}")
+                self.assertEqual(self.github.issues[0]["title"], f"3日間新語候補 {collector.issue_period_start(local)}")
 
     def test_fallback_expands_window_and_marks_older_words(self):
         for days, expected_stage in ((10, "直近30日"), (100, "直近365日"), (500, "期間制限なし")):
@@ -180,9 +190,9 @@ class CollectorTests(unittest.TestCase):
                 self.assertIn(f"Search: 補充: {expected_stage}", self.output.getvalue())
                 self.assertIn("過去の未登録語を含む", self.github.issues[0]["body"])
 
-    def test_recent_window_is_seven_elapsed_days_across_dst(self):
+    def test_recent_window_is_three_elapsed_days_across_dst(self):
         now = dt.datetime(2026, 11, 1, 19, tzinfo=collector.TZ)
-        published = now.astimezone(dt.timezone.utc) - dt.timedelta(days=7, minutes=30)
+        published = now.astimezone(dt.timezone.utc) - dt.timedelta(days=3, minutes=30)
         self.rss = evidence("夏時間切替の名称")
         for item in self.rss:
             item["pubdate"] = email.utils.format_datetime(published)
@@ -376,6 +386,21 @@ class CollectorTests(unittest.TestCase):
         self.github.issues[50]["pull_request"] = {}
         self.assertEqual(len(collector.list_issues()), 1099)
         self.assertEqual(len(self.github.calls), 12)
+
+
+class ScheduleTests(unittest.TestCase):
+    def test_calendar_interval_across_month_year_and_dst(self):
+        start = collector.ISSUE_EPOCH
+        for offset in range(500):
+            day = start + dt.timedelta(days=offset)
+            now = dt.datetime.combine(day, dt.time(19), collector.TZ)
+            self.assertEqual(collector.schedule_due(now), offset % 3 == 0)
+            self.assertEqual(collector.issue_period_start(day), start + dt.timedelta(days=offset - offset % 3))
+
+    def test_gate_uses_toronto_date_and_starts_on_october_15(self):
+        self.assertFalse(collector.schedule_due(dt.datetime(2026, 10, 15, 3, tzinfo=dt.timezone.utc)))
+        self.assertTrue(collector.schedule_due(dt.datetime(2026, 10, 16, 2, tzinfo=dt.timezone.utc)))
+        self.assertFalse(collector.schedule_due(dt.datetime(2026, 10, 16, 4, tzinfo=dt.timezone.utc)))
 
 
 class NetworkingTests(unittest.TestCase):

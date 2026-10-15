@@ -27,6 +27,8 @@ TOKEN = os.environ.get("GH_TOKEN", "")
 CODE_SEARCH_TOKEN = os.environ.get("CODE_SEARCH_TOKEN", "")
 TZ = ZoneInfo("America/Toronto")
 ISSUE_LIMIT = 10
+ISSUE_INTERVAL_DAYS = 3
+ISSUE_EPOCH = dt.date(2026, 10, 15)
 SEEN_PATH = Path("data/seen.tsv")
 READINGS_PATH = Path(__file__).resolve().parents[1] / "data/readings.json"
 SEEN_FIELDS = ["date", "reading", "word", "pos", "id", "normalized"]
@@ -48,7 +50,7 @@ FALLBACK_QUERIES = (
     'ブランド "名称"',
 )
 SEARCH_STAGES = (
-    ("直近7日", 7, SEARCH_QUERIES),
+    ("直近3日", 3, SEARCH_QUERIES),
     ("補充: 直近30日", 30, SEARCH_QUERIES + FALLBACK_QUERIES),
     ("補充: 直近365日", 365, SEARCH_QUERIES + FALLBACK_QUERIES),
     ("補充: 期間制限なし", None, SEARCH_QUERIES + FALLBACK_QUERIES),
@@ -66,6 +68,15 @@ ORG_HINTS = (
 QUOTE_RE = re.compile(r'[「『“"]([^」』”"]{2,60})[」』”"]')
 ASCII_NAME_RE = re.compile(r"(?<![A-Za-z0-9])(?:[A-Z][A-Za-z0-9+._-]*)(?:\s+[A-Z][A-Za-z0-9+._-]*){0,4}(?![A-Za-z0-9])")
 ENTRIES_RE = re.compile(r"<!-- new-word-entries\s*\n(.*?)\n-->", re.DOTALL)
+
+
+def issue_period_start(day: dt.date) -> dt.date:
+    return day - dt.timedelta(days=(day - ISSUE_EPOCH).days % ISSUE_INTERVAL_DAYS)
+
+
+def schedule_due(now: dt.datetime | None = None) -> bool:
+    day = (now or dt.datetime.now(TZ)).astimezone(TZ).date()
+    return day >= ISSUE_EPOCH and day == issue_period_start(day)
 
 
 class CodeSearchDeferred(RuntimeError):
@@ -340,7 +351,7 @@ class ReadingHTML(HTMLParser):
         elif tag in {"p", "div", "br", "li", "h1", "h2", "h3", "td"}:
             self.parts.append("\n")
         if tag == "img":
-            self.parts.append(dict(attrs).get("alt", ""))
+            self.parts.append(dict(attrs).get("alt") or "")
 
     def handle_endtag(self, tag):
         if tag in {"script", "style", "noscript"}:
@@ -584,7 +595,7 @@ def list_issues() -> list[dict]:
 def issue_rows(issue: dict) -> list[dict]:
     """Read metadata and the previous collector's TSV without treating prose as words."""
     body = issue.get("body") or ""
-    date_match = re.fullmatch(r"(?:週間)?新語候補 (\d{4}-\d{2}-\d{2})", issue.get("title") or "")
+    date_match = re.fullmatch(r"(?:週間|3日間)?新語候補 (\d{4}-\d{2}-\d{2})", issue.get("title") or "")
     date = date_match.group(1) if date_match else ""
     result = {}
     for match in ENTRIES_RE.finditer(body):
@@ -656,7 +667,7 @@ def select_sources(items: list[dict[str, str]]) -> list[dict[str, str]]:
 
 
 def collect_candidates(now: dt.datetime, excluded: set[str], id_map: dict[str, int], limit: int,
-                       readings: ReadingResolver | None = None) -> list[dict]:
+                       readings: ReadingResolver | None = None, *, dictionary_index=None) -> list[dict]:
     checked = {}
     readings = readings or ReadingResolver()
     reference = now.astimezone(dt.timezone.utc)
@@ -713,7 +724,8 @@ def collect_candidates(now: dt.datetime, excluded: set[str], id_map: dict[str, i
                 if key not in checked:
                     print(f"Check existing word: {word}", flush=True)
                     try:
-                        checked[key] = already_in_japanese_keyboard(word)
+                        checked[key] = (dictionary_index.contains(word) if dictionary_index is not None
+                                        else already_in_japanese_keyboard(word))
                     except CodeSearchDeferred as error:
                         counts["code_search_deferred"] += 1
                         print(f"{error}; confirmed candidates: {len(accepted)}", flush=True)
@@ -726,8 +738,10 @@ def collect_candidates(now: dt.datetime, excluded: set[str], id_map: dict[str, i
                 accepted.append({
                     "date": now.date().isoformat(), **readings.resolve(word, sources), "word": word,
                     "pos": pos, "id": str(id_map[pos]), "normalized": key, "sources": sources,
-                    "supplement": days != 7,
+                    "supplement": days != ISSUE_INTERVAL_DAYS,
                 })
+                if dictionary_index is not None:
+                    accepted[-1]["dictionary_check"] = dictionary_index.check(word, now.date().isoformat())
                 if len(accepted) >= limit:
                     break
             counts["accepted"] = len(accepted)
@@ -783,13 +797,20 @@ def render_rows(rows: list[dict]) -> str:
 
 
 def render_issue(title: str, rows: list[dict]) -> str:
+    checks = []
+    proofs = {(row["dictionary_check"]["release"], len(row["dictionary_check"]["packs"]))
+              for row in rows if row.get("dictionary_check")}
+    for release, packs in sorted(proofs):
+        checks.append(f"- converter {release} の検証済み全{packs}パックの表記を照合（読み違いでも同表記は除外）")
+    if any(not row.get("dictionary_check") for row in rows):
+        checks += ["- KazumaProject/JapaneseKeyboard のGitHubコード検索",
+                   "> 注: コード検索による候補のバイナリ辞書内部は未確認です。検索で見つからないことは辞書本体に未登録であることを保証しません。"]
     return "\n".join([
         f"# {title}", "", render_rows(rows), "", "## 重複チェック", "",
         f"- 過去の {REPO} Issue と data/seen.tsv",
-        "- KazumaProject/JapaneseKeyboard のGitHubコード検索",
+        *checks,
         "- 同一候補はNFKC正規化 + 大文字小文字正規化で比較",
         "", "## 品詞", "", f"Mozc 最新 id.def: {MOZC_ID_DEF}", "",
-        "> 注: JapaneseKeyboard のバイナリ辞書内部は未確認です。コード検索で見つからないことは、辞書本体に未登録であることを保証しません。",
         "", "_Generated automatically by GitHub Actions without a paid AI API._",
     ])
 
@@ -936,7 +957,7 @@ def refresh_issue_readings(issues: list[dict], *, limit: int | None = 10,
     resolver = resolver or ReadingResolver(page_limit=None if limit is None else 20)
     pending = [(issue["number"], normalize(row["word"]))
                for issue in sorted(issues, key=lambda item: item["number"])
-               if re.fullmatch(r"(?:週間)?新語候補 \d{4}-\d{2}-\d{2}", issue.get("title", ""))
+               if re.fullmatch(r"(?:週間|3日間)?新語候補 \d{4}-\d{2}-\d{2}", issue.get("title", ""))
                for row in issue_rows(issue) if row["reading"] == "要確認"]
     if pending and limit is not None:
         offset = (now or dt.datetime.now(TZ)).date().toordinal() * limit % len(pending)
@@ -947,7 +968,7 @@ def refresh_issue_readings(issues: list[dict], *, limit: int | None = 10,
     confirmed = []
     # Rotate the bounded reading backlog so later Issues also receive retries.
     for issue in sorted(issues, key=lambda item: item["number"]):
-        if not re.fullmatch(r"(?:週間)?新語候補 \d{4}-\d{2}-\d{2}", issue.get("title", "")):
+        if not re.fullmatch(r"(?:週間|3日間)?新語候補 \d{4}-\d{2}-\d{2}", issue.get("title", "")):
             continue
         updates = {}
         for row in issue_rows(issue):
@@ -984,9 +1005,8 @@ def write_summary(lines: list[str]) -> None:
 
 def main(now: dt.datetime | None = None) -> int:
     now = (now or dt.datetime.now(TZ)).astimezone(TZ)
-    week_start = now.date() - dt.timedelta(days=now.weekday())
-    title = f"週間新語候補 {week_start.isoformat()}"
-    print(f"Collect: Toronto {now:%Y-%m-%d %H:%M %Z}; weekly Issue limit {ISSUE_LIMIT}", flush=True)
+    title = f"3日間新語候補 {issue_period_start(now.date()).isoformat()}"
+    print(f"Collect: Toronto {now:%Y-%m-%d %H:%M %Z}; 3-day Issue limit {ISSUE_LIMIT}", flush=True)
     try:
         issues = list_issues()
         readings = ReadingResolver()
@@ -998,7 +1018,7 @@ def main(now: dt.datetime | None = None) -> int:
         append_seen(previous_rows)
         remaining = max(0, ISSUE_LIMIT - len(previous_rows))
         if remaining == 0:
-            print(f"Weekly Issue already has {len(previous_rows)} candidates: {existing['html_url']}")
+            print(f"Issue already has {len(previous_rows)} candidates: {existing['html_url']}")
             write_summary([f"## {title}", f"掲載済み: {len(previous_rows)}語。上限に達しているため追加なし。", existing["html_url"]])
             return 0
 
@@ -1007,7 +1027,15 @@ def main(now: dt.datetime | None = None) -> int:
             excluded.update(normalize(row["word"]) for row in issue_rows(issue))
         deferred = None
         try:
-            accepted = collect_candidates(now, excluded, fetch_id_map(), remaining, readings)
+            if os.environ.get("DICTIONARY_INDEX_PATH"):
+                from dictionary_assets import DictionaryIndex
+                with DictionaryIndex.from_environment() as index:
+                    proof = index.document["provenance"]
+                    print(f"Checking written forms against verified {proof['release']} ({len(proof['packs'])} packs)", flush=True)
+                    accepted = collect_candidates(now, excluded, fetch_id_map(), remaining, readings,
+                                                  dictionary_index=index)
+            else:
+                accepted = collect_candidates(now, excluded, fetch_id_map(), remaining, readings)
         except CodeSearchDeferred as error:
             if not previous_rows:
                 raise
@@ -1023,7 +1051,7 @@ def main(now: dt.datetime | None = None) -> int:
 
         url, published = publish_candidates(title, accepted, existing)
         saved = append_seen(published)
-        print(f"Created/updated: {url}\nWeekly candidates: {len(published)}\nNew seen records: {saved}")
+        print(f"Created/updated: {url}\nIssue candidates: {len(published)}\nNew seen records: {saved}")
         write_summary([f"## {title}", f"掲載: {len(published)}語 / 履歴への追加: {saved}語", url])
         return 0
     except Exception as error:
@@ -1033,13 +1061,15 @@ def main(now: dt.datetime | None = None) -> int:
 
 
 if __name__ == "__main__":
-    if sys.argv[1:] == ["--refresh-readings"]:
+    if sys.argv[1:] == ["--schedule-due"]:
+        print(str(schedule_due()).lower())
+    elif sys.argv[1:] == ["--refresh-readings"]:
         try:
             refresh_issue_readings(list_issues(), limit=None)
         except Exception as error:
             print(f"Reading refresh failed: {error}", file=sys.stderr)
             raise SystemExit(1)
     elif sys.argv[1:]:
-        raise SystemExit("Usage: collect_new_words.py [--refresh-readings]")
+        raise SystemExit("Usage: collect_new_words.py [--refresh-readings | --schedule-due]")
     else:
         raise SystemExit(main())

@@ -45,7 +45,7 @@ jobs:
         run: python -m pip install -r requirements.txt
       - name: Test collectors and archive
         run: python -B -m unittest discover -s tests -v
-      - name: Download and verify all 13 dictionary packs
+      - name: Download and verify all 38 dictionary packs
         run: python scripts/dictionary_assets.py --output "$DICTIONARY_INDEX_PATH"
       - name: Collect Release candidates
         id: collect
